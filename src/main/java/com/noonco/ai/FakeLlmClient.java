@@ -1,0 +1,77 @@
+package com.noonco.ai;
+
+import java.time.Duration;
+import java.util.Iterator;
+import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.stereotype.Component;
+
+/**
+ * Gemini 를 호출하지 않는 테스트·개발용 구현.
+ * 첫 줄은 {"visualType":"LINE","title":"..."} 메타 JSON 이고, 일부러 여러 조각으로 쪼개서 내보낸다.
+ * 둘째 줄부터는 해설 본문이다.
+ */
+@Component
+@ConditionalOnProperty(name = "llm.provider", havingValue = "fake")
+public class FakeLlmClient implements LlmClient {
+
+	static final List<String> CHUNKS = List.of(
+			"{\"visualType\":\"LI",
+			"NE\",\"title\":\"월별 ",
+			"방문자 수 추이\"}",
+			"\n",
+			"이 자료는 1월부터 6월까지의 월별 방문자 수를 나타낸 꺾은선 그래프입니다.\n",
+			"가로축은 월, 세로축은 방문자 수이며, ",
+			"전체적으로 꾸준히 증가하는 흐름을 보입니다.\n",
+			"가장 낮은 달은 1월로 약 1,200명이고, ",
+			"가장 높은 달은 6월로 약 3,400명입니다.\n"
+	);
+
+	private final Duration chunkDelay;
+
+	public FakeLlmClient(LlmProperties properties) {
+		this.chunkDelay = properties.fake().chunkDelay();
+	}
+
+	@Override
+	public LlmStream stream(LlmRequest request) {
+		return new FakeLlmStream(CHUNKS.iterator(), chunkDelay);
+	}
+
+	private static class FakeLlmStream extends AbstractLlmStream {
+
+		private final Iterator<String> chunks;
+		private final Duration delay;
+		private final CountDownLatch closeSignal = new CountDownLatch(1);
+
+		FakeLlmStream(Iterator<String> chunks, Duration delay) {
+			this.chunks = chunks;
+			this.delay = delay;
+		}
+
+		@Override
+		protected String fetchNext() {
+			if (!chunks.hasNext()) {
+				return null;
+			}
+			try {
+				// 조각 사이 지연을 흉내 낸다. 대기 중 close 되면 즉시 끝낸다.
+				if (closeSignal.await(delay.toNanos(), TimeUnit.NANOSECONDS)) {
+					return null;
+				}
+			} catch (InterruptedException e) {
+				Thread.currentThread().interrupt();
+				return null;
+			}
+			return chunks.next();
+		}
+
+		@Override
+		protected void onClose() {
+			closeSignal.countDown();
+		}
+	}
+}

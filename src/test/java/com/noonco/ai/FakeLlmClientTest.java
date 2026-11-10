@@ -16,7 +16,7 @@ class FakeLlmClientTest {
 	private static LlmClient fakeClient(Duration chunkDelay) {
 		return new FakeLlmClient(new LlmProperties(
 				"fake",
-				new LlmProperties.Gemini(null, "unused", 1.0f, 1),
+				new LlmProperties.Gemini(null, "unused", 1.0f, 1, Duration.ofSeconds(1), 1),
 				new LlmProperties.Fake(chunkDelay)));
 	}
 

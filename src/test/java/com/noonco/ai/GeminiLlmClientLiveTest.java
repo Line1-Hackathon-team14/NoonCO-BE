@@ -21,6 +21,7 @@ import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
+import org.springframework.boot.convert.DurationStyle;
 
 /**
  * 실제 Gemini API 를 호출한다. GEMINI_API_KEY 환경변수가 있을 때만 실행되며 DB 는 필요 없다.
@@ -45,7 +46,9 @@ class GeminiLlmClientLiveTest {
 						System.getenv("GEMINI_API_KEY"),
 						env("GEMINI_MODEL").orElse("gemini-3.8-flash"),
 						env("GEMINI_TEMPERATURE").map(Float::valueOf).orElse(1.0f),
-						env("GEMINI_MAX_OUTPUT_TOKENS").map(Integer::valueOf).orElse(4096)),
+						env("GEMINI_MAX_OUTPUT_TOKENS").map(Integer::valueOf).orElse(4096),
+						env("GEMINI_TIMEOUT").map(DurationStyle::detectAndParse).orElse(Duration.ofSeconds(120)),
+						env("GEMINI_RETRY_ATTEMPTS").map(Integer::valueOf).orElse(2)),
 				new LlmProperties.Fake(Duration.ZERO)));
 	}
 

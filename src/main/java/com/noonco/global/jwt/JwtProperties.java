@@ -8,6 +8,7 @@ import org.springframework.boot.context.properties.bind.DefaultValue;
 @ConfigurationProperties("jwt")
 public record JwtProperties(
 		String secret,
-		@DefaultValue("30m") Duration accessTokenExpiration
+		@DefaultValue("30m") Duration accessTokenExpiration,
+		@DefaultValue("14d") Duration refreshTokenExpiration
 ) {
 }

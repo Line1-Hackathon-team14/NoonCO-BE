@@ -60,9 +60,10 @@ jobs:
 
       # 8. 앱이 실제로 떴는지 확인한다 (최대 90초 대기)
       - name: Health check
+        timeout-minutes: 2   # 재시도·대기를 포함한 전체 검사 상한
         run: |
           for i in $(seq 1 18); do
-            if curl -sf -o /dev/null https://api.mingu.cloud/swagger-ui/index.html; then
+            if curl -sf --max-time 5 -o /dev/null https://api.mingu.cloud/swagger-ui/index.html; then
               echo "배포 성공"; exit 0
             fi
             sleep 5

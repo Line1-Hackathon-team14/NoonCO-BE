@@ -72,7 +72,7 @@ public class PromptLoader {
 	}
 
 	static Prompt parse(String path, String raw) {
-		String text = raw.startsWith("﻿") ? raw.substring(1) : raw;
+		String text = (raw.startsWith("\uFEFF") ? raw.substring(1) : raw).replace("\r\n", "\n");
 		int newline = text.indexOf('\n');
 		String firstLine = (newline < 0 ? text : text.substring(0, newline)).strip();
 		String body = newline < 0 ? "" : text.substring(newline + 1).strip();

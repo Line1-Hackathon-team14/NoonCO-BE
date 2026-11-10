@@ -67,12 +67,12 @@ class PromptLoaderTest {
 	@Test
 	void handlesCrlfAndBom() throws IOException {
 		writeAllValid();
-		write("image_normal.txt", "﻿# version: v3\r\n첫 줄\r\n둘째 줄\r\n");
+		write("image_normal.txt", "\uFEFF# version: v3\r\n첫 줄\r\n둘째 줄\r\n");
 
 		Prompt prompt = loaderFor(dir).get(SourceType.IMAGE, Difficulty.NORMAL);
 
 		assertThat(prompt.version()).isEqualTo("v3");
-		assertThat(prompt.content()).isEqualTo("첫 줄\r\n둘째 줄");
+		assertThat(prompt.content()).isEqualTo("첫 줄\n둘째 줄");
 	}
 
 	@Test

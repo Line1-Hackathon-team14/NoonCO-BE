@@ -1,0 +1,72 @@
+# 개발 서버 배포: 로컬에서 하던 "bootJar → scp → systemctl restart" 를 GitHub 의 임시 VM 에서 대신 실행한다.
+name: Deploy to dev server
+
+on:
+  # Actions 탭의 "Run workflow" 버튼으로 수동 실행. 동작 확인 후 아래 push 트리거 주석을 해제한다.
+  workflow_dispatch:
+  # push:
+  #   branches: [develop]
+
+# 같은 배포가 겹치면 진행 중인 배포를 끝까지 마친 뒤 다음 배포를 실행한다
+concurrency:
+  group: deploy-dev
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest   # GitHub 가 빌려주는 임시 Ubuntu VM (job 이 끝나면 사라짐)
+    steps:
+      # 1. 레포 코드를 VM 에 내려받는다
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false   # 이후 git 인증이 필요 없으므로 토큰을 남기지 않는다
+
+      # 2. JDK 21 설치 (로컬 개발 환경 대신)
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      # 3. Gradle 캐시를 설정해 다음 실행부터 빌드를 빠르게 한다
+      - uses: gradle/actions/setup-gradle@v4
+
+      # 4. 로컬의 ./gradlew bootJar 와 같다
+      - name: Build jar
+        run: |
+          chmod +x gradlew
+          ./gradlew bootJar
+
+      # 5. Secrets 에 저장한 배포용 개인키를 VM 에 파일로 만든다
+      - name: Set up SSH key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          # 서버 호스트 공개키(/etc/ssh/ssh_host_ed25519_key.pub)를 고정해 다른 서버로의 접속을 막는다
+          # 서버를 새로 만들면 이 값을 다시 확인해 바꾼다
+          echo "${{ secrets.SSH_HOST }} ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOF+XtT0+9FAvGIdRD6vQ4qQeeMFWccmYeewTw0h12Ms" >> ~/.ssh/known_hosts
+
+      # 6. 로컬의 scp 와 같다. 실행 중인 jar 를 덮어쓰지 않도록 임시 이름으로 올린 뒤 교체한다
+      - name: Upload jar
+        run: |
+          scp -i ~/.ssh/deploy_key build/libs/noonco-0.0.1-SNAPSHOT.jar \
+            "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:/opt/noonco/noonco.jar.new"
+
+      # 7. 로컬의 ssh 접속 후 systemctl restart 와 같다
+      - name: Restart app
+        run: |
+          ssh -i ~/.ssh/deploy_key "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}" \
+            'mv /opt/noonco/noonco.jar.new /opt/noonco/noonco.jar && sudo systemctl restart noonco'
+
+      # 8. 앱이 실제로 떴는지 확인한다 (최대 90초 대기)
+      - name: Health check
+        timeout-minutes: 2   # 재시도·대기를 포함한 전체 검사 상한
+        run: |
+          for i in $(seq 1 18); do
+            code=$(curl -s --max-time 5 -o /dev/null -w "%{http_code}" https://api.mingu.cloud/swagger-ui/index.html || true)
+            if [ "$code" = "200" ]; then
+              echo "배포 성공"; exit 0
+            fi
+            sleep 5
+          done
+          echo "앱 응답 없음: 서버에서 journalctl -u noonco 확인"; exit 1

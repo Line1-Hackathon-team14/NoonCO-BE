@@ -16,11 +16,14 @@ import org.springframework.stereotype.Component;
 import com.noonco.global.ResultCode;
 import com.noonco.global.exception.BusinessException;
 
+import lombok.extern.slf4j.Slf4j;
+
 /**
  * 업로드 파일을 "UUID.확장자" 이름으로 저장 폴더에 바로 저장하고, 그 이름(저장소 키)을 돌려준다.
  * DB(material.file_path)에는 전체 경로가 아니라 이 키만 저장한다.
  * 원본 파일명은 경로에 쓰지 않으며, 확장자는 검증된 {@link FileType} 에서 정한다.
  */
+@Slf4j
 @Component
 public class FileStorage {
 
@@ -59,6 +62,18 @@ public class FileStorage {
 	 */
 	public Resource load(String key) {
 		return new FileSystemResource(resolveExisting(key));
+	}
+
+	/**
+	 * load 와 같은 키 형식·경로 검사를 거친 파일만 지운다.
+	 * DB 저장 실패 뒤 정리용이라 원래 예외를 가리지 않도록, 삭제하지 못하면 로그만 남긴다.
+	 */
+	public void delete(String key) {
+		try {
+			Files.delete(resolveExisting(key));
+		} catch (BusinessException | IOException e) {
+			log.warn("파일을 삭제하지 못했습니다: {}", key, e);
+		}
 	}
 
 	private Path resolveExisting(String key) {

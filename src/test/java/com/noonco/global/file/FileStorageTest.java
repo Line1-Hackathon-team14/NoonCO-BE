@@ -142,6 +142,40 @@ class FileStorageTest {
 				});
 	}
 
+	@Test
+	void deleteRemovesSavedFile() throws IOException {
+		FileStorage storage = new FileStorage(dir);
+		String key = storage.save(new ByteArrayInputStream(FileValidatorTest.PNG_BYTES), FileType.PNG);
+
+		storage.delete(key);
+
+		assertThat(listFiles()).isEmpty();
+		assertNotFound(storage, key);
+	}
+
+	@ParameterizedTest
+	@ValueSource(strings = {
+			"../outside.jpg",
+			"../3f2a1b4c-0000-4000-8000-0000000000c1.jpg",
+			"3f2a1b4c-0000-4000-8000-0000000000c2.jpg",
+			""
+	})
+	void deleteIgnoresMalformedTraversalOrMissingKeys(String key) throws IOException {
+		FileStorage storage = new FileStorage(dir.resolve("files"));
+		Path outside = Files.write(dir.resolve("outside.jpg"), FileValidatorTest.JPEG_BYTES);
+		Path outsideWithKeyName = Files.write(dir.resolve("3f2a1b4c-0000-4000-8000-0000000000c1.jpg"), FileValidatorTest.JPEG_BYTES);
+
+		storage.delete(key);
+
+		assertThat(outside).isRegularFile();
+		assertThat(outsideWithKeyName).isRegularFile();
+	}
+
+	@Test
+	void deleteIgnoresNullKey() {
+		new FileStorage(dir).delete(null);
+	}
+
 	private static void assertNotFound(FileStorage storage, String key) {
 		assertThatThrownBy(() -> storage.load(key))
 				.isInstanceOf(BusinessException.class)

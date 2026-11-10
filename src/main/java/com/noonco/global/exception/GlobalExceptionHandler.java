@@ -11,6 +11,7 @@ import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.context.request.WebRequest;
+import org.springframework.web.multipart.MaxUploadSizeExceededException;
 import org.springframework.web.servlet.mvc.method.annotation.ResponseEntityExceptionHandler;
 
 import com.noonco.global.ResultCode;
@@ -48,6 +49,13 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
 				.toList();
 		return ResponseEntity.status(status).headers(headers).contentType(MediaType.APPLICATION_JSON)
 				.body(RsData.fail(ResultCode.VALIDATION_FAILED, fieldErrors));
+	}
+
+	@Override
+	protected ResponseEntity<Object> handleMaxUploadSizeExceededException(MaxUploadSizeExceededException ex,
+			HttpHeaders headers, HttpStatusCode status, WebRequest request) {
+		return ResponseEntity.status(ResultCode.FILE_TOO_LARGE.getStatus()).headers(headers).contentType(MediaType.APPLICATION_JSON)
+				.body(RsData.fail(ResultCode.FILE_TOO_LARGE));
 	}
 
 	@Override

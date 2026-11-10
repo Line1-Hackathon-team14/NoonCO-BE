@@ -18,6 +18,8 @@ import org.springframework.stereotype.Component;
 @ConditionalOnProperty(name = "llm.provider", havingValue = "fake")
 public class FakeLlmClient implements LlmClient {
 
+	static final String MODEL = "fake";
+
 	static final List<String> CHUNKS = List.of(
 			"{\"visualType\":\"LI",
 			"NE\",\"title\":\"월별 ",
@@ -39,6 +41,11 @@ public class FakeLlmClient implements LlmClient {
 	@Override
 	public LlmStream stream(LlmRequest request) {
 		return new FakeLlmStream(CHUNKS.iterator(), chunkDelay);
+	}
+
+	@Override
+	public String model() {
+		return MODEL;
 	}
 
 	private static class FakeLlmStream extends AbstractLlmStream {

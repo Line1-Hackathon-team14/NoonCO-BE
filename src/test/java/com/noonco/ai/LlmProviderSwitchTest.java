@@ -18,7 +18,10 @@ class LlmProviderSwitchTest {
 	@Test
 	void fakeProviderRegistersFakeClient() {
 		contextRunner.withPropertyValues("llm.provider=fake")
-				.run(context -> assertThat(context.getBean(LlmClient.class)).isInstanceOf(FakeLlmClient.class));
+				.run(context -> {
+					assertThat(context.getBean(LlmClient.class)).isInstanceOf(FakeLlmClient.class);
+					assertThat(context.getBean(LlmClient.class).model()).isEqualTo("fake");
+				});
 	}
 
 	@Test
@@ -33,6 +36,7 @@ class LlmProviderSwitchTest {
 						"llm.gemini.retry-attempts=1")
 				.run(context -> {
 					assertThat(context.getBean(LlmClient.class)).isInstanceOf(GeminiLlmClient.class);
+					assertThat(context.getBean(LlmClient.class).model()).isEqualTo("gemini-test-model");
 					LlmProperties.Gemini gemini = context.getBean(LlmProperties.class).gemini();
 					assertThat(gemini.model()).isEqualTo("gemini-test-model");
 					assertThat(gemini.temperature()).isEqualTo(0.2f);

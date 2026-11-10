@@ -29,6 +29,9 @@ import org.hibernate.type.SqlTypes;
 @NoArgsConstructor(access = AccessLevel.PROTECTED)
 public class Material extends BaseTimeEntity {
 
+	// material.title 컬럼 길이
+	static final int MAX_TITLE_LENGTH = 100;
+
 	@Id
 	@GeneratedValue(strategy = GenerationType.IDENTITY)
 	private Long id;
@@ -81,5 +84,16 @@ public class Material extends BaseTimeEntity {
 
 	public void delete() {
 		this.deletedAt = LocalDateTime.now();
+	}
+
+	/**
+	 * 컬럼 길이(문자 수)를 넘으면 앞에서부터 100자만 남긴다. 이모지 등 서로게이트 쌍은 쪼개지 않는다.
+	 */
+	public void changeTitle(String title) {
+		String stripped = title.strip();
+		if (stripped.codePointCount(0, stripped.length()) > MAX_TITLE_LENGTH) {
+			stripped = stripped.substring(0, stripped.offsetByCodePoints(0, MAX_TITLE_LENGTH)).strip();
+		}
+		this.title = stripped;
 	}
 }

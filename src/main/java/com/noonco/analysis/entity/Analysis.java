@@ -62,4 +62,16 @@ public class Analysis extends BaseTimeEntity {
 		this.material = material;
 		this.difficulty = difficulty;
 	}
+
+	public void complete(VisualType visualType, String summary, String model, String promptVersion) {
+		this.visualType = visualType;
+		this.summary = summary;
+		this.model = model;
+		this.promptVersion = promptVersion;
+		this.status = AnalysisStatus.COMPLETED;
+	}
+
+	public void fail() {
+		this.status = AnalysisStatus.FAILED;
+	}
 }

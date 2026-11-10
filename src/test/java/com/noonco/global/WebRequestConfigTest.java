@@ -28,6 +28,7 @@ import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.multipart.MultipartFile;
 
 import com.jayway.jsonpath.JsonPath;
+import com.noonco.global.jwt.JwtTokenProvider;
 
 import jakarta.persistence.EntityManagerFactory;
 
@@ -45,7 +46,8 @@ import jakarta.persistence.EntityManagerFactory;
 		"spring.jpa.properties.hibernate.boot.allow_jdbc_metadata_access=false",
 		"spring.sql.init.mode=never",
 		"llm.provider=fake",
-		"cors.allowed-origins=http://localhost:5173, https://app.example.com"
+		"cors.allowed-origins=http://localhost:5173, https://app.example.com",
+		"jwt.secret=test-secret-key-for-noonco-jwt-must-be-32-bytes-or-more"
 })
 @AutoConfigureMockMvc
 @Import(WebRequestConfigTest.UploadTestController.class)
@@ -68,6 +70,9 @@ class WebRequestConfigTest {
 
 	@Autowired
 	ApplicationContext context;
+
+	@Autowired
+	JwtTokenProvider jwtTokenProvider;
 
 	@LocalServerPort
 	int port;
@@ -139,6 +144,7 @@ class WebRequestConfigTest {
 
 		HttpRequest request = HttpRequest.newBuilder(URI.create("http://localhost:" + port + UPLOAD_PATH))
 				.header(HttpHeaders.CONTENT_TYPE, "multipart/form-data; boundary=" + boundary)
+				.header(HttpHeaders.AUTHORIZATION, "Bearer " + jwtTokenProvider.createAccessToken(1L))
 				.POST(HttpRequest.BodyPublishers.ofByteArray(body.toByteArray()))
 				.build();
 		try (HttpClient client = HttpClient.newHttpClient()) {

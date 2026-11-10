@@ -97,6 +97,16 @@ class JwtAuthenticationTest {
 				.andExpect(jsonPath("$.data").value("pong"));
 	}
 
+	@Test
+	void authPathIgnoresExpiredToken() throws Exception {
+		JwtTokenProvider expiredProvider = new JwtTokenProvider(new JwtProperties(SECRET, Duration.ofSeconds(-1)));
+		String expired = expiredProvider.createAccessToken(42L);
+
+		mockMvc.perform(get("/api/v1/auth/ping").header(HttpHeaders.AUTHORIZATION, "Bearer " + expired))
+				.andExpect(status().isOk())
+				.andExpect(jsonPath("$.data").value("pong"));
+	}
+
 	private void expectFailure(ResultActions actions, ResultCode resultCode) throws Exception {
 		actions.andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
 				.andExpect(jsonPath("$.resultCode").value(resultCode.name()))

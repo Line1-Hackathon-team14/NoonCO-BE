@@ -5,6 +5,7 @@ import java.util.List;
 
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.security.web.util.matcher.RequestMatcher;
 import org.springframework.web.filter.OncePerRequestFilter;
 
 import com.noonco.global.ResultCode;
@@ -23,9 +24,17 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
 	private static final String TOKEN_PREFIX = "Bearer ";
 
 	private final JwtTokenProvider jwtTokenProvider;
+	private final RequestMatcher publicPaths;
 
-	public JwtAuthenticationFilter(JwtTokenProvider jwtTokenProvider) {
+	public JwtAuthenticationFilter(JwtTokenProvider jwtTokenProvider, RequestMatcher publicPaths) {
 		this.jwtTokenProvider = jwtTokenProvider;
+		this.publicPaths = publicPaths;
+	}
+
+	// 공개 경로는 만료·잘못된 토큰이 붙어 와도 막지 않도록 검증을 건너뛴다.
+	@Override
+	protected boolean shouldNotFilter(HttpServletRequest request) {
+		return publicPaths.matches(request);
 	}
 
 	@Override

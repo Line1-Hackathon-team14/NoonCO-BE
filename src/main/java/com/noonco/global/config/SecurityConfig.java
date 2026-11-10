@@ -1,5 +1,7 @@
 package com.noonco.global.config;
 
+import java.util.stream.Stream;
+
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.security.config.Customizer;
@@ -9,6 +11,9 @@ import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
+import org.springframework.security.web.servlet.util.matcher.PathPatternRequestMatcher;
+import org.springframework.security.web.util.matcher.OrRequestMatcher;
+import org.springframework.security.web.util.matcher.RequestMatcher;
 
 import com.noonco.global.ResultCode;
 import com.noonco.global.jwt.JwtAuthenticationFilter;
@@ -22,12 +27,13 @@ import lombok.RequiredArgsConstructor;
 @RequiredArgsConstructor
 public class SecurityConfig {
 
-	private static final String[] PERMIT_ALL_PATHS = {
+	// 인가 규칙과 JWT 필터 제외 경로가 같은 matcher 를 공유한다.
+	private static final RequestMatcher PUBLIC_PATHS = new OrRequestMatcher(Stream.of(
 			"/api/v1/auth/**",
 			"/swagger-ui/**",
 			"/swagger-ui.html",
 			"/v3/api-docs/**"
-	};
+	).map(PathPatternRequestMatcher.withDefaults()::matcher).toArray(RequestMatcher[]::new));
 
 	private final JwtTokenProvider jwtTokenProvider;
 
@@ -41,12 +47,12 @@ public class SecurityConfig {
 				.sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
 				.authorizeHttpRequests(auth -> auth
 						.dispatcherTypeMatchers(DispatcherType.ASYNC, DispatcherType.ERROR).permitAll()
-						.requestMatchers(PERMIT_ALL_PATHS).permitAll()
+						.requestMatchers(PUBLIC_PATHS).permitAll()
 						.anyRequest().authenticated())
 				.exceptionHandling(exception -> exception
 						.authenticationEntryPoint((request, response, authException) ->
 								SecurityErrorResponseWriter.write(response, ResultCode.UNAUTHORIZED)))
-				.addFilterBefore(new JwtAuthenticationFilter(jwtTokenProvider), UsernamePasswordAuthenticationFilter.class)
+				.addFilterBefore(new JwtAuthenticationFilter(jwtTokenProvider, PUBLIC_PATHS), UsernamePasswordAuthenticationFilter.class)
 				.build();
 	}
 

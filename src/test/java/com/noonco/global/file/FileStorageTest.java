@@ -12,6 +12,7 @@ import java.util.EnumSet;
 import java.util.List;
 import java.util.stream.Stream;
 
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -45,8 +46,8 @@ class FileStorageTest {
 	@Test
 	void keyAndPathUseUuidAndVerifiedExtensionNotOriginalName() throws IOException {
 		FileStorage storage = new FileStorage(dir);
-		// 원본 파일명은 .jpg 지만 내용은 PNG
-		MockMultipartFile upload = new MockMultipartFile("file", "내-과제_report.jpg", "image/png", FileValidatorTest.PNG_BYTES);
+		// 원본 파일명(한글·특수문자 포함)은 저장 경로에 쓰이지 않아야 한다
+		MockMultipartFile upload = new MockMultipartFile("file", "내-과제_report.PNG", "image/png", FileValidatorTest.PNG_BYTES);
 		FileType type = new FileValidator().validate(upload, EnumSet.of(FileType.JPEG, FileType.PNG));
 
 		String key = storage.save(upload.getInputStream(), type);
@@ -109,6 +110,22 @@ class FileStorageTest {
 	@Test
 	void rejectsWellFormedKeyThatDoesNotExist() {
 		assertNotFound(new FileStorage(dir), "3f2a1b4c-0000-4000-8000-0000000000c1.jpg");
+	}
+
+	@Test
+	void rejectsSymlinkPointingOutsideStorageDir() throws IOException {
+		Path storageDir = dir.resolve("files");
+		FileStorage storage = new FileStorage(storageDir);
+		Path outside = Files.write(dir.resolve("outside.jpg"), FileValidatorTest.JPEG_BYTES);
+		String key = "3f2a1b4c-0000-4000-8000-0000000000c1.jpg";
+		try {
+			Files.createSymbolicLink(storageDir.resolve(key), outside);
+		} catch (IOException | UnsupportedOperationException | SecurityException e) {
+			// Windows 권한 부족 등으로 링크를 만들 수 없는 환경에서는 건너뛴다
+			Assumptions.abort("심볼릭 링크를 만들 수 없는 환경: " + e);
+		}
+
+		assertNotFound(storage, key);
 	}
 
 	@Test

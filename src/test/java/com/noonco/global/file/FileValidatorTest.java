@@ -41,9 +41,25 @@ class FileValidatorTest {
 	}
 
 	@Test
-	void decidesTypeFromContentNotFilename() {
-		// 파일명은 .pdf 지만 선언 MIME 과 내용이 모두 PNG 이면 PNG 로 판정
-		assertThat(validator.validate(file("photo.pdf", "image/png", PNG_BYTES), IMAGE_TYPES)).isEqualTo(FileType.PNG);
+	void rejectsExtensionNotMatchingActualType() {
+		// MIME 과 내용은 PNG 로 일치하지만 확장자만 .jpg 로 바꾼 경우
+		assertInvalid(file("photo.jpg", "image/png", PNG_BYTES), IMAGE_TYPES);
+		assertInvalid(file("photo.pdf", "image/png", PNG_BYTES), IMAGE_TYPES);
+	}
+
+	@Test
+	void acceptsExtensionCaseInsensitivelyAndJpegAlias() {
+		assertThat(validator.validate(file("photo.JPEG", "image/jpeg", JPEG_BYTES), IMAGE_TYPES)).isEqualTo(FileType.JPEG);
+		assertThat(validator.validate(file("photo.Jpg", "image/jpeg", JPEG_BYTES), IMAGE_TYPES)).isEqualTo(FileType.JPEG);
+		assertThat(validator.validate(file("scan.PDF", "application/pdf", PDF_BYTES), PDF_TYPES)).isEqualTo(FileType.PDF);
+	}
+
+	@Test
+	void skipsExtensionCheckWhenFilenameHasNoExtensionOrIsEmpty() {
+		// 카메라 촬영 blob 업로드처럼 확장자가 없는 경우
+		assertThat(validator.validate(file("blob", "image/png", PNG_BYTES), IMAGE_TYPES)).isEqualTo(FileType.PNG);
+		assertThat(validator.validate(file("", "image/jpeg", JPEG_BYTES), IMAGE_TYPES)).isEqualTo(FileType.JPEG);
+		assertThat(validator.validate(file(null, "image/jpeg", JPEG_BYTES), IMAGE_TYPES)).isEqualTo(FileType.JPEG);
 	}
 
 	@Test

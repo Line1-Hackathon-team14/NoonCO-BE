@@ -74,7 +74,7 @@ class JwtAuthenticationTest {
 	@Test
 	void tokenSignedWithOtherKeyReturnsUnauthorized() throws Exception {
 		JwtTokenProvider otherProvider = new JwtTokenProvider(
-				new JwtProperties("another-secret-key-that-is-also-32-bytes-long!!", Duration.ofMinutes(30)));
+				new JwtProperties("another-secret-key-that-is-also-32-bytes-long!!", Duration.ofMinutes(30), Duration.ofDays(14)));
 		String forged = otherProvider.createAccessToken(42L);
 
 		expectFailure(mockMvc.perform(get("/api/v1/test/me").header(HttpHeaders.AUTHORIZATION, "Bearer " + forged))
@@ -83,7 +83,7 @@ class JwtAuthenticationTest {
 
 	@Test
 	void expiredTokenReturnsAccessTokenExpired() throws Exception {
-		JwtTokenProvider expiredProvider = new JwtTokenProvider(new JwtProperties(SECRET, Duration.ofSeconds(-1)));
+		JwtTokenProvider expiredProvider = new JwtTokenProvider(new JwtProperties(SECRET, Duration.ofSeconds(-1), Duration.ofDays(14)));
 		String expired = expiredProvider.createAccessToken(42L);
 
 		expectFailure(mockMvc.perform(get("/api/v1/test/me").header(HttpHeaders.AUTHORIZATION, "Bearer " + expired))
@@ -99,7 +99,7 @@ class JwtAuthenticationTest {
 
 	@Test
 	void authPathIgnoresExpiredToken() throws Exception {
-		JwtTokenProvider expiredProvider = new JwtTokenProvider(new JwtProperties(SECRET, Duration.ofSeconds(-1)));
+		JwtTokenProvider expiredProvider = new JwtTokenProvider(new JwtProperties(SECRET, Duration.ofSeconds(-1), Duration.ofDays(14)));
 		String expired = expiredProvider.createAccessToken(42L);
 
 		mockMvc.perform(get("/api/v1/auth/ping").header(HttpHeaders.AUTHORIZATION, "Bearer " + expired))

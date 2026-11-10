@@ -47,7 +47,7 @@ class LlmProviderSwitchTest {
 		contextRunner.withPropertyValues("llm.provider=gemini", "llm.gemini.api-key=dummy-key")
 				.run(context -> {
 					LlmProperties.Gemini gemini = context.getBean(LlmProperties.class).gemini();
-					assertThat(gemini.timeout()).isEqualTo(Duration.ofSeconds(120));
+					assertThat(gemini.timeout()).isEqualTo(Duration.ofSeconds(60));
 					assertThat(gemini.retryAttempts()).isEqualTo(2);
 				});
 	}

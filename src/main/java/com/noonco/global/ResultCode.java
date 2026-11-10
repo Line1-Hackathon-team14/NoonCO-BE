@@ -21,6 +21,8 @@ public enum ResultCode {
 	RESOURCE_NOT_FOUND(HttpStatus.NOT_FOUND, "요청한 자료를 찾을 수 없습니다."),
 	METHOD_NOT_ALLOWED(HttpStatus.METHOD_NOT_ALLOWED, "지원하지 않는 요청 방식입니다."),
 	EMAIL_ALREADY_EXISTS(HttpStatus.CONFLICT, "이미 가입된 이메일입니다."),
+	ANALYSIS_IN_PROGRESS(HttpStatus.CONFLICT, "이미 해설을 만들고 있습니다. 잠시 후 다시 시도해 주세요."),
+	ANALYSIS_ALREADY_COMPLETED(HttpStatus.CONFLICT, "이미 해설이 완료된 자료입니다."),
 	FILE_TOO_LARGE(HttpStatus.CONTENT_TOO_LARGE, "파일 크기는 5MB 이하여야 합니다."),
 	INVALID_FILE_TYPE(HttpStatus.BAD_REQUEST, "지원하지 않는 파일 형식입니다. 파일을 확인해 주세요."),
 	INTERNAL_ERROR(HttpStatus.INTERNAL_SERVER_ERROR, "서버 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.");

@@ -70,6 +70,11 @@ public class GeminiLlmClient implements LlmClient {
 				GeminiLlmClient::textChunks);
 	}
 
+	@Override
+	public String model() {
+		return model;
+	}
+
 	@PreDestroy
 	public void shutdown() {
 		requestExecutor.shutdownNow();

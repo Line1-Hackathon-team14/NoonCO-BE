@@ -11,4 +11,9 @@ public interface LlmClient {
 	 * 반환된 스트림은 반드시 close 해야 하며, 수신 도중 close 하면 호출이 중단된다.
 	 */
 	LlmStream stream(LlmRequest request);
+
+	/**
+	 * 실제로 호출하는 모델 이름. analysis.model 에 저장한다.
+	 */
+	String model();
 }

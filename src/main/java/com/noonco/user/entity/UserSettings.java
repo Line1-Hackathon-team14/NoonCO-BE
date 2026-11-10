@@ -52,4 +52,12 @@ public class UserSettings {
 	public UserSettings(User user) {
 		this.user = user;
 	}
+
+	public void changeDifficulty(Difficulty difficulty) {
+		this.difficulty = difficulty;
+	}
+
+	public void changeSpeechRate(BigDecimal speechRate) {
+		this.speechRate = speechRate;
+	}
 }

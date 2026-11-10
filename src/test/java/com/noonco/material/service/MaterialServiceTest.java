@@ -88,6 +88,16 @@ class MaterialServiceTest {
 	}
 
 	@Test
+	void uploadResponseCreatedAtMatchesStoredValue() {
+		MaterialUploadResponse response = materialService.uploadImage(userId, png("chart.png"));
+		flushAndClear();
+
+		Material found = materialRepository.findById(response.materialId()).orElseThrow();
+		assertThat(response.createdAt().getNano()).isZero();
+		assertThat(response.createdAt()).isEqualTo(found.getCreatedAt());
+	}
+
+	@Test
 	void invalidFileTypeIsRejectedWithoutStoringFile() {
 		List<Path> before = storedFiles();
 		MockMultipartFile pdf = new MockMultipartFile("file", "doc.pdf", "application/pdf", "%PDF-1.7\n".getBytes());

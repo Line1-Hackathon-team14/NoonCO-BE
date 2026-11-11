@@ -43,6 +43,8 @@ class MaterialControllerTest {
 	private static final long USER_ID = 1L;
 	private static final String UPLOAD_PATH = "/api/v1/materials/images";
 	private static final byte[] PNG_BYTES = {(byte)0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D};
+	private static final String PDF_UPLOAD_PATH = "/api/v1/materials/pdfs";
+	private static final byte[] PDF_BYTES = "%PDF-1.7\n".getBytes();
 
 	@Autowired MockMvc mockMvc;
 	@Autowired JwtTokenProvider jwtTokenProvider;
@@ -98,6 +100,58 @@ class MaterialControllerTest {
 				.andExpect(jsonPath("$.resultCode").value("UNAUTHORIZED"));
 
 		verifyNoInteractions(materialService);
+	}
+
+	@Test
+	void uploadPdfReturnsCreatedWithSpecFieldsOnly() throws Exception {
+		given(materialService.uploadPdf(eq(USER_ID), any())).willReturn(new MaterialUploadResponse(
+				11L, SourceType.PDF, null, PDF_BYTES.length, 12, LocalDateTime.of(2026, 11, 9, 14, 32, 0)));
+
+		mockMvc.perform(multipart(PDF_UPLOAD_PATH).file(pdf()).header("Authorization", bearer()))
+				.andExpect(status().isCreated())
+				.andExpect(content().json("""
+						{
+						  "resultCode": "CREATED",
+						  "msg": "생성되었습니다.",
+						  "data": {
+						    "materialId": 11,
+						    "sourceType": "PDF",
+						    "title": null,
+						    "fileSize": 9,
+						    "pageCount": 12,
+						    "createdAt": "2026-11-09T14:32:00"
+						  }
+						}""", JsonCompareMode.STRICT));
+
+		ArgumentCaptor<MultipartFile> captor = ArgumentCaptor.forClass(MultipartFile.class);
+		verify(materialService).uploadPdf(eq(USER_ID), captor.capture());
+		assertThat(captor.getValue().getOriginalFilename()).isEqualTo("lecture.pdf");
+		assertThat(captor.getValue().getBytes()).isEqualTo(PDF_BYTES);
+	}
+
+	@Test
+	void unreadablePdfReturnsUnprocessableContent() throws Exception {
+		given(materialService.uploadPdf(eq(USER_ID), any()))
+				.willThrow(new BusinessException(ResultCode.PDF_UNREADABLE));
+
+		mockMvc.perform(multipart(PDF_UPLOAD_PATH).file(pdf()).header("Authorization", bearer()))
+				.andExpect(status().isUnprocessableContent())
+				.andExpect(jsonPath("$.resultCode").value("PDF_UNREADABLE"))
+				.andExpect(jsonPath("$.msg").value(ResultCode.PDF_UNREADABLE.getMessage()))
+				.andExpect(jsonPath("$.data").doesNotExist());
+	}
+
+	@Test
+	void uploadPdfWithoutTokenReturnsUnauthorized() throws Exception {
+		mockMvc.perform(multipart(PDF_UPLOAD_PATH).file(pdf()))
+				.andExpect(status().isUnauthorized())
+				.andExpect(jsonPath("$.resultCode").value("UNAUTHORIZED"));
+
+		verifyNoInteractions(materialService);
+	}
+
+	private static MockMultipartFile pdf() {
+		return new MockMultipartFile("file", "lecture.pdf", "application/pdf", PDF_BYTES);
 	}
 
 	private static MockMultipartFile png() {

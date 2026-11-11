@@ -5,6 +5,9 @@ import java.io.InputStream;
 import java.io.UncheckedIOException;
 import java.util.Set;
 
+import org.apache.pdfbox.Loader;
+import org.apache.pdfbox.io.RandomAccessReadBuffer;
+import org.apache.pdfbox.pdmodel.PDDocument;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionSynchronization;
@@ -30,6 +33,8 @@ import lombok.RequiredArgsConstructor;
 public class MaterialService {
 
 	private static final Set<FileType> IMAGE_TYPES = Set.of(FileType.JPEG, FileType.PNG);
+	private static final Set<FileType> PDF_TYPES = Set.of(FileType.PDF);
+	private static final int MAX_PDF_PAGES = 30;
 
 	private final MaterialRepository materialRepository;
 	private final UserRepository userRepository;
@@ -52,6 +57,45 @@ public class MaterialService {
 				.fileSize((int)file.getSize())
 				.build());
 		return MaterialUploadResponse.of(material);
+	}
+
+	/**
+	 * 텍스트는 추출하지 않는다. 해설 생성 때 PDF 원본을 그대로 AI 에 보낸다.
+	 * 검증을 저장보다 먼저 하므로 실패한 파일은 저장되지 않는다.
+	 * @throws BusinessException INVALID_FILE_TYPE, PDF_UNREADABLE, PDF_TOO_MANY_PAGES
+	 */
+	public MaterialUploadResponse uploadPdf(Long userId, MultipartFile file) {
+		FileType type = fileValidator.validate(file, PDF_TYPES);
+		int pageCount = countPages(file);
+		String key = storeFile(file, type);
+		Material material = materialRepository.save(Material.builder()
+				.user(userRepository.getReferenceById(userId))
+				.sourceType(SourceType.PDF)
+				.originalFilename(file.getOriginalFilename())
+				.filePath(key)
+				.mimeType(type.getMimeType())
+				.fileSize((int)file.getSize())
+				.pageCount(pageCount)
+				.build());
+		return MaterialUploadResponse.of(material);
+	}
+
+	/**
+	 * 열람 암호가 걸렸거나(InvalidPasswordException) 손상된 PDF 는 열리지 않는다.
+	 * 권한 암호만 걸린 PDF 는 열리므로 허용한다.
+	 */
+	private static int countPages(MultipartFile file) {
+		int pageCount;
+		try (InputStream in = file.getInputStream();
+				PDDocument document = Loader.loadPDF(new RandomAccessReadBuffer(in))) {
+			pageCount = document.getNumberOfPages();
+		} catch (IOException e) {
+			throw new BusinessException(ResultCode.PDF_UNREADABLE);
+		}
+		if (pageCount > MAX_PDF_PAGES) {
+			throw new BusinessException(ResultCode.PDF_TOO_MANY_PAGES);
+		}
+		return pageCount;
 	}
 
 	/**

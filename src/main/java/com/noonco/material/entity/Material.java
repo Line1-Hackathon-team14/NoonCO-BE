@@ -60,9 +60,6 @@ public class Material extends BaseTimeEntity {
 	@Column(name = "page_count")
 	private Integer pageCount;
 
-	@Column(name = "extracted_text", columnDefinition = "MEDIUMTEXT")
-	private String extractedText;
-
 	@Column(name = "deleted_at")
 	private LocalDateTime deletedAt;
 
@@ -71,7 +68,7 @@ public class Material extends BaseTimeEntity {
 
 	@Builder
 	private Material(User user, SourceType sourceType, String originalFilename, String filePath,
-			String mimeType, Integer fileSize, Integer pageCount, String extractedText) {
+			String mimeType, Integer fileSize, Integer pageCount) {
 		this.user = user;
 		this.sourceType = sourceType;
 		this.originalFilename = originalFilename;
@@ -79,7 +76,6 @@ public class Material extends BaseTimeEntity {
 		this.mimeType = mimeType;
 		this.fileSize = fileSize;
 		this.pageCount = pageCount;
-		this.extractedText = extractedText;
 	}
 
 	public void delete() {

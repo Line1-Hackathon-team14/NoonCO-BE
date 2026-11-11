@@ -46,6 +46,8 @@ import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBody;
 
 import com.noonco.ai.LlmClient;
+import com.noonco.ai.LlmInput;
+import com.noonco.ai.LlmRequest;
 import com.noonco.ai.LlmStream;
 import com.noonco.ai.PromptLoader;
 import com.noonco.analysis.entity.Analysis;
@@ -80,8 +82,11 @@ class AnalysisControllerTest {
 	private static final Path STORAGE_DIR = createTempDir();
 	private static final byte[] PNG_BYTES = {(byte)0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D};
 	private static final String STORED_KEY = UUID.randomUUID() + ".png";
+	private static final byte[] PDF_BYTES = "%PDF-1.7\n".getBytes(StandardCharsets.US_ASCII);
+	private static final String STORED_PDF_KEY = UUID.randomUUID() + ".pdf";
 	// FakeLlmClient 응답에서 첫 줄 메타 JSON 과 그 뒤 줄바꿈을 뺀 본문
 	private static final String FAKE_TITLE = "월별 방문자 수 추이";
+	private static final String FAKE_PDF_TITLE = "월별 방문자 수 보고서";
 	private static final String FAKE_BODY = """
 			이 자료는 1월부터 6월까지의 월별 방문자 수를 나타낸 꺾은선 그래프입니다.
 			가로축은 월, 세로축은 방문자 수이며, 전체적으로 꾸준히 증가하는 흐름을 보입니다.
@@ -117,6 +122,10 @@ class AnalysisControllerTest {
 		Path stored = STORAGE_DIR.resolve(STORED_KEY);
 		if (Files.notExists(stored)) {
 			Files.write(stored, PNG_BYTES);
+		}
+		Path storedPdf = STORAGE_DIR.resolve(STORED_PDF_KEY);
+		if (Files.notExists(storedPdf)) {
+			Files.write(storedPdf, PDF_BYTES);
 		}
 		userId = saveUser(Difficulty.HARD);
 		materialId = saveMaterial(userId);
@@ -169,6 +178,61 @@ class AnalysisControllerTest {
 		assertThat(analysis.getPromptVersion()).isEqualTo(promptLoader.get(SourceType.IMAGE, Difficulty.HARD).version());
 		assertThat(analysis.getDifficulty()).isEqualTo(Difficulty.HARD);
 		assertThat(materialRepository.findById(materialId).orElseThrow().getTitle()).isEqualTo(FAKE_TITLE);
+	}
+
+	@Test
+	void pdfStreamsTitleOnlyMetaAndSavesNullVisualType() throws Exception {
+		Long pdfMaterialId = savePdfMaterial(userId);
+		MvcResult result = startStream(pdfMaterialId);
+
+		mockMvc.perform(asyncDispatch(result)).andExpect(status().isOk());
+
+		List<String> lines = lines(result.getResponse().getContentAsString(StandardCharsets.UTF_8));
+		Analysis analysis = analysisRepository.findFirstByMaterialIdOrderByIdDesc(pdfMaterialId).orElseThrow();
+		Long analysisId = analysis.getId();
+
+		assertThat(lines.get(0)).isEqualTo("{\"type\":\"started\",\"analysisId\":" + analysisId + ",\"difficulty\":\"HARD\"}");
+		assertThat(lines.get(1)).isEqualTo("{\"type\":\"progress\",\"stage\":\"ANALYZING\"}");
+		// PDF 는 visualType 키 자체가 없어야 한다
+		assertThat(lines.get(2)).isEqualTo("{\"type\":\"meta\",\"title\":\"" + FAKE_PDF_TITLE + "\"}");
+		assertThat(lines.get(3)).isEqualTo("{\"type\":\"progress\",\"stage\":\"GENERATING\"}");
+		assertThat(lines.getLast()).isEqualTo("{\"type\":\"done\",\"analysisId\":" + analysisId + ",\"status\":\"COMPLETED\"}");
+
+		List<String> deltaLines = lines.subList(4, lines.size() - 1);
+		assertThat(deltaLines).isNotEmpty();
+		StringBuilder body = new StringBuilder();
+		for (String line : deltaLines) {
+			JsonNode node = jsonMapper.readTree(line);
+			assertThat(node.propertyNames()).containsExactly("type", "text");
+			assertThat(node.get("type").stringValue()).isEqualTo("delta");
+			body.append(node.get("text").stringValue());
+		}
+		assertThat(body.toString()).isEqualTo(FAKE_BODY);
+
+		assertThat(analysis.getStatus()).isEqualTo(AnalysisStatus.COMPLETED);
+		assertThat(analysis.getVisualType()).isNull();
+		assertThat(jdbcTemplate.queryForObject("select visual_type from analysis where id = ?", String.class, analysisId))
+				.isNull();
+		assertThat(analysis.getSummary()).isEqualTo(FAKE_BODY);
+		assertThat(analysis.getPromptVersion()).isEqualTo(promptLoader.get(SourceType.PDF, Difficulty.HARD).version());
+		assertThat(materialRepository.findById(pdfMaterialId).orElseThrow().getTitle()).isEqualTo(FAKE_PDF_TITLE);
+	}
+
+	@Test
+	void pdfMaterialIsSentToLlmAsPdfFile() throws Exception {
+		Long pdfMaterialId = savePdfMaterial(userId);
+		AtomicReference<LlmRequest> sent = new AtomicReference<>();
+		doAnswer(invocation -> {
+			sent.set(invocation.getArgument(0));
+			return invocation.callRealMethod();
+		}).when(llmClient).stream(any());
+
+		mockMvc.perform(asyncDispatch(startStream(pdfMaterialId))).andExpect(status().isOk());
+
+		LlmInput.File file = (LlmInput.File)sent.get().input();
+		assertThat(file.mimeType()).isEqualTo("application/pdf");
+		assertThat(file.bytes()).isEqualTo(PDF_BYTES);
+		assertThat(sent.get().prompt()).isEqualTo(promptLoader.get(SourceType.PDF, Difficulty.HARD).content());
 	}
 
 	@Test
@@ -364,6 +428,18 @@ class AnalysisControllerTest {
 				.filePath(STORED_KEY)
 				.mimeType("image/png")
 				.fileSize(PNG_BYTES.length)
+				.build()).getId();
+	}
+
+	private Long savePdfMaterial(Long ownerId) {
+		return materialRepository.save(Material.builder()
+				.user(userRepository.getReferenceById(ownerId))
+				.sourceType(SourceType.PDF)
+				.originalFilename("lecture.pdf")
+				.filePath(STORED_PDF_KEY)
+				.mimeType("application/pdf")
+				.fileSize(PDF_BYTES.length)
+				.pageCount(1)
 				.build()).getId();
 	}
 

@@ -17,6 +17,11 @@ import java.util.Optional;
 
 import javax.imageio.ImageIO;
 
+import org.apache.pdfbox.pdmodel.PDDocument;
+import org.apache.pdfbox.pdmodel.PDPage;
+import org.apache.pdfbox.pdmodel.PDPageContentStream;
+import org.apache.pdfbox.pdmodel.font.PDType1Font;
+import org.apache.pdfbox.pdmodel.font.Standard14Fonts;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
@@ -29,6 +34,12 @@ import org.springframework.boot.convert.DurationStyle;
  */
 @EnabledIfEnvironmentVariable(named = "GEMINI_API_KEY", matches = ".+")
 class GeminiLlmClientLiveTest {
+
+	private static final String PDF_PROMPT = """
+			당신은 시각장애인을 위해 학습 자료를 말로 풀어 설명하는 해설자입니다.
+			첫 줄에는 {"title":"자료 제목"} 형식의 JSON 한 줄만 출력하세요.
+			둘째 줄부터는 자료의 구성과 핵심 내용을 한국어로 5문장 이상 설명하세요.
+			""";
 
 	private static final String PROMPT = """
 			당신은 시각장애인을 위해 시각 자료를 말로 풀어 설명하는 해설자입니다.
@@ -59,7 +70,7 @@ class GeminiLlmClientLiveTest {
 
 	@Test
 	void streamsExplanationOfImageInChunks() throws IOException {
-		List<String> chunks = collect(LlmRequest.ofImage(PROMPT, lineChartPng(), "image/png"));
+		List<String> chunks = collect(LlmRequest.ofFile(PROMPT, lineChartPng(), "image/png"));
 
 		assertThat(chunks).hasSizeGreaterThanOrEqualTo(2);
 		String full = String.join("", chunks);
@@ -68,21 +79,19 @@ class GeminiLlmClientLiveTest {
 	}
 
 	@Test
-	void streamsExplanationOfExtractedText() {
-		String extracted = """
-				2024년 분기별 매출 (단위: 억 원)
-				1분기 12.4 / 2분기 15.1 / 3분기 18.9 / 4분기 17.2
-				""";
-		List<String> chunks = collect(LlmRequest.ofText(PROMPT, extracted));
+	void streamsExplanationOfPdf() throws IOException {
+		List<String> chunks = collect(LlmRequest.ofFile(PDF_PROMPT, salesReportPdf(), "application/pdf"));
 
 		assertThat(chunks).isNotEmpty();
-		assertThat(String.join("", chunks)).contains("visualType");
+		String full = String.join("", chunks);
+		assertThat(full.lines().findFirst().orElseThrow()).contains("title");
+		assertThat(full.lines().skip(1).toList()).isNotEmpty();
 	}
 
 	@Test
 	void closeStopsInProgressCall() throws IOException {
 		List<String> received = new ArrayList<>();
-		try (LlmStream stream = client.stream(LlmRequest.ofImage(PROMPT, lineChartPng(), "image/png"))) {
+		try (LlmStream stream = client.stream(LlmRequest.ofFile(PROMPT, lineChartPng(), "image/png"))) {
 			for (String chunk : stream) {
 				received.add(chunk);
 				stream.close();
@@ -106,6 +115,27 @@ class GeminiLlmClientLiveTest {
 
 	private static Optional<String> env(String name) {
 		return Optional.ofNullable(System.getenv(name)).filter(value -> !value.isBlank());
+	}
+
+	/** 분기별 매출 표가 적힌 1쪽짜리 PDF 를 만든다. */
+	private static byte[] salesReportPdf() throws IOException {
+		try (PDDocument document = new PDDocument()) {
+			PDPage page = new PDPage();
+			document.addPage(page);
+			try (PDPageContentStream content = new PDPageContentStream(document, page)) {
+				content.beginText();
+				content.setFont(new PDType1Font(Standard14Fonts.FontName.HELVETICA), 14);
+				content.setLeading(20);
+				content.newLineAtOffset(72, 700);
+				content.showText("2024 Quarterly Sales (unit: 100M KRW)");
+				content.newLine();
+				content.showText("Q1 12.4 / Q2 15.1 / Q3 18.9 / Q4 17.2");
+				content.endText();
+			}
+			ByteArrayOutputStream out = new ByteArrayOutputStream();
+			document.save(out);
+			return out.toByteArray();
+		}
 	}
 
 	/** 1~6월 방문자 수 꺾은선 그래프 이미지를 그린다. */

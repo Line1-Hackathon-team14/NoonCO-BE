@@ -56,8 +56,8 @@ public class AnalysisStreamService {
 			write(out, AnalysisStreamEvent.started(start.analysisId(), start.difficulty()));
 			write(out, AnalysisStreamEvent.progress(AnalysisStreamEvent.STAGE_ANALYZING));
 
-			byte[] image = fileStorage.load(start.filePath()).getContentAsByteArray();
-			llmStream = llmClient.stream(LlmRequest.ofImage(start.prompt().content(), image, start.mimeType()));
+			byte[] file = fileStorage.load(start.filePath()).getContentAsByteArray();
+			llmStream = llmClient.stream(LlmRequest.ofFile(start.prompt().content(), file, start.mimeType()));
 
 			StreamState state = new StreamState();
 			LlmOutputParser parser = new LlmOutputParser(start.sourceType());

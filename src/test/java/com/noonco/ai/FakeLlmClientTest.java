@@ -23,7 +23,7 @@ class FakeLlmClientTest {
 	@Test
 	void streamsMetaLineInSeveralChunksThenExplanation() {
 		List<String> chunks = new ArrayList<>();
-		try (LlmStream stream = fakeClient(Duration.ZERO).stream(LlmRequest.ofImage("프롬프트", new byte[] {1}, "image/png"))) {
+		try (LlmStream stream = fakeClient(Duration.ZERO).stream(LlmRequest.ofFile("프롬프트", new byte[] {1}, "image/png"))) {
 			stream.forEach(chunks::add);
 		}
 
@@ -39,15 +39,22 @@ class FakeLlmClientTest {
 	}
 
 	@Test
-	void acceptsTextInputThroughSameInterface() {
-		try (LlmStream stream = fakeClient(Duration.ZERO).stream(LlmRequest.ofText("프롬프트", "PDF 추출 텍스트"))) {
-			assertThat(stream).isNotEmpty();
+	void pdfRequestStreamsTitleOnlyMetaLine() {
+		List<String> chunks = new ArrayList<>();
+		try (LlmStream stream = fakeClient(Duration.ZERO).stream(LlmRequest.ofFile("프롬프트", new byte[] {1}, "application/pdf"))) {
+			stream.forEach(chunks::add);
 		}
+
+		String full = String.join("", chunks);
+		String firstLine = full.substring(0, full.indexOf('\n'));
+		assertThat(firstLine).startsWith("{\"title\":\"").endsWith("\"}").doesNotContain("visualType");
+		assertThat(full.substring(full.indexOf('\n') + 1)).isNotBlank();
+		assertThat(chunks).noneMatch(chunk -> chunk.contains(firstLine));
 	}
 
 	@Test
 	void closeFromAnotherThreadStopsIteration() throws Exception {
-		LlmStream stream = fakeClient(Duration.ofSeconds(1)).stream(LlmRequest.ofText("프롬프트", "본문"));
+		LlmStream stream = fakeClient(Duration.ofSeconds(1)).stream(LlmRequest.ofFile("프롬프트", new byte[] {1}, "image/png"));
 		List<String> received = new ArrayList<>();
 		CompletableFuture<Void> reading = CompletableFuture.runAsync(() -> stream.forEach(received::add));
 
@@ -63,7 +70,7 @@ class FakeLlmClientTest {
 
 	@Test
 	void streamCanBeIteratedOnlyOnce() {
-		try (LlmStream stream = fakeClient(Duration.ZERO).stream(LlmRequest.ofText("프롬프트", "본문"))) {
+		try (LlmStream stream = fakeClient(Duration.ZERO).stream(LlmRequest.ofFile("프롬프트", new byte[] {1}, "image/png"))) {
 			stream.iterator();
 			assertThatThrownBy(stream::iterator).isInstanceOf(IllegalStateException.class);
 		}

@@ -9,11 +9,7 @@ public record LlmRequest(String prompt, LlmInput input) {
 		Objects.requireNonNull(input, "input");
 	}
 
-	public static LlmRequest ofImage(String prompt, byte[] imageBytes, String mimeType) {
-		return new LlmRequest(prompt, new LlmInput.Image(imageBytes, mimeType));
-	}
-
-	public static LlmRequest ofText(String prompt, String text) {
-		return new LlmRequest(prompt, new LlmInput.Text(text));
+	public static LlmRequest ofFile(String prompt, byte[] bytes, String mimeType) {
+		return new LlmRequest(prompt, new LlmInput.File(bytes, mimeType));
 	}
 }

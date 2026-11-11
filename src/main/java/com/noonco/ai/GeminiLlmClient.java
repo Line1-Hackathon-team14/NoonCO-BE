@@ -81,14 +81,14 @@ public class GeminiLlmClient implements LlmClient {
 		client.close();
 	}
 
-	private Content toContent(LlmRequest request) {
+	/**
+	 * 이미지·PDF 모두 파일 바이트를 받은 mimeType 그대로 inline Part 로 보낸다.
+	 */
+	static Content toContent(LlmRequest request) {
 		return switch (request.input()) {
-			case LlmInput.Image image -> Content.fromParts(
-					Part.fromBytes(image.bytes(), image.mimeType()),
+			case LlmInput.File file -> Content.fromParts(
+					Part.fromBytes(file.bytes(), file.mimeType()),
 					Part.fromText(request.prompt()));
-			case LlmInput.Text text -> Content.fromParts(
-					Part.fromText(request.prompt()),
-					Part.fromText(text.content()));
 		};
 	}
 

@@ -25,6 +25,8 @@ public enum ResultCode {
 	ANALYSIS_ALREADY_COMPLETED(HttpStatus.CONFLICT, "이미 해설이 완료된 자료입니다."),
 	FILE_TOO_LARGE(HttpStatus.CONTENT_TOO_LARGE, "파일 크기는 5MB 이하여야 합니다."),
 	INVALID_FILE_TYPE(HttpStatus.BAD_REQUEST, "지원하지 않는 파일 형식입니다. 파일을 확인해 주세요."),
+	PDF_UNREADABLE(HttpStatus.UNPROCESSABLE_CONTENT, "PDF 파일을 열 수 없습니다. 암호가 걸려 있거나 손상된 파일인지 확인해 주세요."),
+	PDF_TOO_MANY_PAGES(HttpStatus.UNPROCESSABLE_CONTENT, "PDF는 30쪽 이하만 올릴 수 있습니다."),
 	INTERNAL_ERROR(HttpStatus.INTERNAL_SERVER_ERROR, "서버 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.");
 
 	private final HttpStatus status;

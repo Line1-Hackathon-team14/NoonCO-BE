@@ -109,12 +109,13 @@ public class AnalysisStreamService {
 	 * 그래서 모든 예외를 여기서 처리하고 정상 반환한다.
 	 */
 	private void run(AnalysisStart start, OutputStream out) {
-		StreamWriter writer = new StreamWriter(start.analysisId(), out, System.nanoTime() + analysisTimeoutNanos);
+		StreamWriter writer = new StreamWriter(start.analysisId(), start.materialId(), out,
+				System.nanoTime() + analysisTimeoutNanos);
 		StreamState state = new StreamState();
 		try {
 			ResultCode failure = generate(start, writer, state);
 			if (failure != null) {
-				sendFailure(start.analysisId(), writer, failure);
+				sendFailure(start.analysisId(), start.materialId(), writer, failure);
 			}
 		} catch (IOException e) {
 			log.info("해설 스트림 연결이 끊겼습니다: analysisId={}, completed={}, cause={}", start.analysisId(),
@@ -134,7 +135,7 @@ public class AnalysisStreamService {
 				} else {
 					log.error("해설 생성 중 오류: analysisId={}, failure={}", start.analysisId(), failure, e);
 				}
-				sendFailure(start.analysisId(), writer, failure);
+				sendFailure(start.analysisId(), start.materialId(), writer, failure);
 			}
 		} finally {
 			// 정리 중 예외가 나도 실행 자리는 반드시 반환하고, 예외는 밖으로 내보내지 않는다.
@@ -142,7 +143,7 @@ public class AnalysisStreamService {
 			try {
 				writer.close();
 				if (!state.completed) {
-					saveFailureQuietly(start.analysisId(), AnalysisStatus.FAILED);
+					saveFailureQuietly(start.analysisId(), start.materialId(), AnalysisStatus.FAILED);
 				}
 			} finally {
 				writer.releasePermit();
@@ -214,7 +215,7 @@ public class AnalysisStreamService {
 				state.meta.title(), state.summary.toString(), state.detail.isEmpty() ? null : state.detail.toString(),
 				llmStream.model(), start.prompt().version());
 		if (!saved) {
-			log.warn("같은 자료에 더 새 해설 요청이 있어 결과를 저장하지 않았습니다: analysisId={}, materialId={}",
+			log.warn("같은 자료에 더 새 해설 요청이 있거나 이미 실패로 저장돼 결과를 저장하지 않았습니다: analysisId={}, materialId={}",
 					start.analysisId(), start.materialId());
 			return ResultCode.AI_FAILED;
 		}
@@ -247,10 +248,10 @@ public class AnalysisStreamService {
 	 * error 의 status 는 저장된 상태라는 약속이므로, 저장에 실패하면 error 없이 끝낸다(클라이언트에는 중단된 스트림으로 보인다).
 	 * 그 경우 analysis 는 PENDING 으로 남을 수 있어, run 의 정리 단계에서 FAILED 저장을 한 번 더 시도한다.
 	 */
-	private void sendFailure(Long analysisId, StreamWriter writer, ResultCode failure) {
+	private void sendFailure(Long analysisId, Long materialId, StreamWriter writer, ResultCode failure) {
 		AnalysisStatus status = failure == ResultCode.UNREADABLE_IMAGE ? AnalysisStatus.UNREADABLE : AnalysisStatus.FAILED;
 		writer.closeLlmStream();
-		if (!saveFailureQuietly(analysisId, status)) {
+		if (!saveFailureQuietly(analysisId, materialId, status)) {
 			log.warn("실패 상태를 저장하지 못해 error 없이 해설 스트림을 끝냅니다: analysisId={}, failure={}", analysisId, failure);
 			return;
 		}
@@ -267,12 +268,12 @@ public class AnalysisStreamService {
 	 *
 	 * @return 저장 중 오류가 없었으면 true
 	 */
-	private boolean saveFailureQuietly(Long analysisId, AnalysisStatus status) {
+	private boolean saveFailureQuietly(Long analysisId, Long materialId, AnalysisStatus status) {
 		try {
 			if (status == AnalysisStatus.UNREADABLE) {
 				analysisService.markUnreadable(analysisId);
 			} else {
-				analysisService.fail(analysisId);
+				analysisService.fail(analysisId, materialId);
 			}
 			return true;
 		} catch (RuntimeException e) {
@@ -333,6 +334,7 @@ public class AnalysisStreamService {
 	private final class StreamWriter {
 
 		private final Long analysisId;
+		private final Long materialId;
 		private final OutputStream out;
 		private final long deadline;
 		private final Object lock = new Object();
@@ -342,8 +344,9 @@ public class AnalysisStreamService {
 		private volatile boolean timedOut;
 		private volatile LlmStream llmStream;
 
-		StreamWriter(Long analysisId, OutputStream out, long deadline) {
+		StreamWriter(Long analysisId, Long materialId, OutputStream out, long deadline) {
 			this.analysisId = analysisId;
+			this.materialId = materialId;
 			this.out = out;
 			this.deadline = deadline;
 		}
@@ -468,7 +471,7 @@ public class AnalysisStreamService {
 				// FAILED 를 먼저 저장해야 같은 자료를 다시 요청해도 진행 중(ANALYSIS_IN_PROGRESS)으로 막히지 않는다
 				log.info("ping 전송 실패로 연결 끊김을 감지해 실행 자리를 먼저 반환합니다: analysisId={}", analysisId);
 				try {
-					saveFailureQuietly(analysisId, AnalysisStatus.FAILED);
+					saveFailureQuietly(analysisId, materialId, AnalysisStatus.FAILED);
 				} finally {
 					releasePermit();
 				}

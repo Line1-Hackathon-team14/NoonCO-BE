@@ -1,7 +1,6 @@
 package com.noonco.analysis.service;
 
 import java.time.Duration;
-import java.time.LocalDateTime;
 
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -91,9 +90,7 @@ public class AnalysisService {
 		if (latest.getStatus() == AnalysisStatus.COMPLETED) {
 			throw new BusinessException(ResultCode.ANALYSIS_ALREADY_COMPLETED);
 		}
-		// 서버가 중간에 내려가 PENDING 으로 남은 분석은 제한 시간이 지나면 진행 중으로 보지 않는다
-		if (latest.getStatus() == AnalysisStatus.PENDING
-				&& latest.getCreatedAt().plus(analysisTimeout).isAfter(LocalDateTime.now())) {
+		if (latest.isInProgress(analysisTimeout)) {
 			throw new BusinessException(ResultCode.ANALYSIS_IN_PROGRESS);
 		}
 	}

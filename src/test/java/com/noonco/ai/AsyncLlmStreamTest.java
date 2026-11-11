@@ -137,6 +137,7 @@ class AsyncLlmStreamTest {
 		FakeResponse response = new FakeResponse(List.of("a", "b", "c"));
 		try (LlmStream stream = new AsyncLlmStream<>(executor, () -> response, FakeResponse::chunks)) {
 			assertThat(stream).containsExactly("a", "b", "c");
+			assertThat(stream.model()).isEqualTo("fake-response-model");
 		}
 		assertThat(response.closed.getCount()).isZero();
 	}
@@ -168,7 +169,7 @@ class AsyncLlmStreamTest {
 		return Duration.ofNanos(System.nanoTime() - startedAt);
 	}
 
-	private static final class FakeResponse implements AutoCloseable {
+	private static final class FakeResponse implements AsyncLlmStream.ModelResponse {
 
 		private final List<String> chunks;
 		private final CountDownLatch closed = new CountDownLatch(1);
@@ -194,6 +195,11 @@ class AsyncLlmStreamTest {
 					return delegate.next();
 				}
 			};
+		}
+
+		@Override
+		public String model() {
+			return "fake-response-model";
 		}
 
 		@Override

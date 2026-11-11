@@ -1,6 +1,7 @@
 package com.noonco.analysis.service;
 
 import java.time.Duration;
+import java.util.Optional;
 
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -68,13 +69,26 @@ public class AnalysisService {
 	}
 
 	/**
+	 * start 와 같은 material 행 잠금 아래에서, 이 analysis 가 그 자료의 최신 analysis 일 때만 완료한다.
+	 * 제한 시간이 지나 새 요청이 시작됐다면 이 analysis 는 대체된 것이므로 결과·제목을 저장하지 않는다.
 	 * 자료가 그 사이 삭제됐으면 제목은 저장하지 않는다. 상세 해설이 없으면 detail 은 null 이다.
+	 *
+	 * @return 완료했으면 true, 대체된 analysis 라 저장하지 않았으면 false
 	 */
-	public void complete(Long analysisId, Long materialId, VisualType visualType, String title, String summary,
+	public boolean complete(Long analysisId, Long materialId, VisualType visualType, String title, String summary,
 			String detail, String model, String promptVersion) {
+		// 잠금 조회를 첫 조회로 해야 뒤의 최신 analysis 조회가 다른 요청이 커밋한 analysis 를 본다 (start 와 같은 이유)
+		Optional<Material> material = materialRepository.findByIdForUpdate(materialId);
+		boolean latest = analysisRepository.findFirstByMaterialIdOrderByIdDesc(materialId)
+				.map(analysis -> analysis.getId().equals(analysisId))
+				.orElse(false);
+		if (!latest) {
+			return false;
+		}
 		Analysis analysis = analysisRepository.findById(analysisId).orElseThrow();
 		analysis.complete(visualType, summary, detail, model, promptVersion);
-		materialRepository.findById(materialId).ifPresent(material -> material.changeTitle(title));
+		material.ifPresent(m -> m.changeTitle(title));
+		return true;
 	}
 
 	/**
@@ -84,6 +98,15 @@ public class AnalysisService {
 		analysisRepository.findById(analysisId)
 				.filter(analysis -> analysis.getStatus() == AnalysisStatus.PENDING)
 				.ifPresent(Analysis::fail);
+	}
+
+	/**
+	 * 아직 PENDING 인 경우에만 UNREADABLE(이미지 판독 불가)로 바꾼다.
+	 */
+	public void markUnreadable(Long analysisId) {
+		analysisRepository.findById(analysisId)
+				.filter(analysis -> analysis.getStatus() == AnalysisStatus.PENDING)
+				.ifPresent(Analysis::markUnreadable);
 	}
 
 	private void checkStartable(Analysis latest) {

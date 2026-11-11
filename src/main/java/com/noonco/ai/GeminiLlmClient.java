@@ -1,8 +1,11 @@
 package com.noonco.ai;
 
+import java.util.ArrayList;
 import java.util.Iterator;
+import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.function.Function;
 import java.util.stream.StreamSupport;
 
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -11,12 +14,14 @@ import org.springframework.util.StringUtils;
 
 import com.google.genai.Client;
 import com.google.genai.ResponseStream;
+import com.google.genai.errors.ApiException;
 import com.google.genai.types.Content;
 import com.google.genai.types.GenerateContentConfig;
 import com.google.genai.types.GenerateContentResponse;
 import com.google.genai.types.HttpOptions;
 import com.google.genai.types.HttpRetryOptions;
 import com.google.genai.types.Part;
+import com.google.genai.types.SafetyRating;
 
 import jakarta.annotation.PreDestroy;
 import lombok.extern.slf4j.Slf4j;
@@ -26,8 +31,12 @@ import lombok.extern.slf4j.Slf4j;
 @ConditionalOnProperty(name = "llm.provider", havingValue = "gemini")
 public class GeminiLlmClient implements LlmClient {
 
+	// 모델 과부하. 이 응답일 때만 예비 모델로 폴백한다 (429 할당량 초과 등은 같은 키라 폴백해도 소용없다)
+	private static final int OVERLOADED = 503;
+
 	private final Client client;
 	private final String model;
+	private final String fallbackModel;
 	private final GenerateContentConfig config;
 	// 가상 스레드는 인터럽트 시 블로킹 소켓 I/O 도 끊기므로, close 로 대기 중인 요청을 바로 중단할 수 있다.
 	private final ExecutorService requestExecutor = Executors.newVirtualThreadPerTaskExecutor();
@@ -49,12 +58,14 @@ public class GeminiLlmClient implements LlmClient {
 						.build())
 				.build();
 		this.model = gemini.model();
+		this.fallbackModel = gemini.fallbackModel();
 		this.config = GenerateContentConfig.builder()
 				.temperature(gemini.temperature())
 				.maxOutputTokens(gemini.maxOutputTokens())
 				.build();
-		log.info("Gemini LLM 클라이언트 초기화: model={}, temperature={}, maxOutputTokens={}, timeout={}, retryAttempts={}",
-				model, gemini.temperature(), gemini.maxOutputTokens(), gemini.timeout(), gemini.retryAttempts());
+		log.info("Gemini LLM 클라이언트 초기화: model={}, fallbackModel={}, temperature={}, maxOutputTokens={}, timeout={}, "
+				+ "retryAttempts={}", model, fallbackModel, gemini.temperature(), gemini.maxOutputTokens(), gemini.timeout(),
+				gemini.retryAttempts());
 	}
 
 	/**
@@ -64,10 +75,43 @@ public class GeminiLlmClient implements LlmClient {
 	@Override
 	public LlmStream stream(LlmRequest request) {
 		Content content = toContent(request);
-		return new AsyncLlmStream<>(
-				requestExecutor,
-				() -> client.models.generateContentStream(model, content, config),
-				GeminiLlmClient::textChunks);
+		return openStream(requestExecutor, model, fallbackModel,
+				requestModel -> new GeminiResponse(requestModel,
+						client.models.generateContentStream(requestModel, content, config)),
+				GeminiResponse::textChunks);
+	}
+
+	/**
+	 * 폴백은 요청 단계(응답 스트림을 받기 전)에서만 한다. 조각을 받기 시작한 뒤의 실패는 순회 중에 나므로
+	 * 다시 시도하지 않는다(이미 보낸 해설과 중복되지 않게).
+	 */
+	static <R extends AsyncLlmStream.ModelResponse> LlmStream openStream(ExecutorService executor, String model,
+			String fallbackModel, Function<String, R> request, Function<R, Iterator<String>> reader) {
+		return new AsyncLlmStream<>(executor, () -> requestWithFallback(model, fallbackModel, request), reader);
+	}
+
+	/**
+	 * 기본 모델이 503(과부하)이면 같은 API 키로 예비 모델에 1회 더 요청한다. SDK 재시도를 모두 쓴 뒤의 실패다.
+	 * 예비 모델이 비어 있거나 기본 모델과 같으면, 또는 그 사이 요청이 취소(인터럽트)됐으면 폴백하지 않는다.
+	 */
+	static <R> R requestWithFallback(String model, String fallbackModel, Function<String, R> request) {
+		try {
+			return request.apply(model);
+		} catch (ApiException e) {
+			if (e.code() != OVERLOADED || !StringUtils.hasText(fallbackModel) || fallbackModel.equals(model)
+					|| Thread.currentThread().isInterrupted()) {
+				throw e;
+			}
+			// API 키는 요청 헤더로만 보내므로 응답 오류(code·status·message)에는 들어 있지 않다
+			log.warn("Gemini 기본 모델 과부하로 예비 모델로 재시도합니다: model={}, fallbackModel={}, reason={} {} {}", model,
+					fallbackModel, e.code(), e.status(), e.message());
+			try {
+				return request.apply(fallbackModel);
+			} catch (RuntimeException fallbackFailure) {
+				fallbackFailure.addSuppressed(e);
+				throw fallbackFailure;
+			}
+		}
 	}
 
 	@Override
@@ -93,12 +137,79 @@ public class GeminiLlmClient implements LlmClient {
 	}
 
 	/**
-	 * 사고(thought) 조각이나 종료 신호만 담긴 응답처럼 텍스트가 없는 조각은 건너뛴다.
+	 * 응답 스트림과, 그 응답을 보낸 모델. 조각을 읽으면서 마지막으로 본 종료 사유·안전 차단 정보를 기억한다.
 	 */
-	private static Iterator<String> textChunks(ResponseStream<GenerateContentResponse> responseStream) {
-		return StreamSupport.stream(responseStream.spliterator(), false)
-				.map(GenerateContentResponse::text)
-				.filter(StringUtils::hasLength)
-				.iterator();
+	static final class GeminiResponse implements AsyncLlmStream.ModelResponse {
+
+		private final String model;
+		private final ResponseStream<GenerateContentResponse> stream;
+		private volatile String finishInfo;
+
+		GeminiResponse(String model, ResponseStream<GenerateContentResponse> stream) {
+			this.model = model;
+			this.stream = stream;
+		}
+
+		@Override
+		public String model() {
+			return model;
+		}
+
+		@Override
+		public String finishInfo() {
+			return finishInfo;
+		}
+
+		/**
+		 * 사고(thought) 조각이나 종료 신호만 담긴 응답처럼 텍스트가 없는 조각은 건너뛴다.
+		 * 건너뛰는 조각에도 종료 사유·차단 정보가 있을 수 있으므로 거르기 전에 기록한다.
+		 */
+		Iterator<String> textChunks() {
+			return StreamSupport.stream(stream.spliterator(), false)
+					.peek(this::recordFinishInfo)
+					.map(GenerateContentResponse::text)
+					.filter(StringUtils::hasLength)
+					.iterator();
+		}
+
+		@Override
+		public void close() {
+			stream.close();
+		}
+
+		private void recordFinishInfo(GenerateContentResponse response) {
+			String info = describeFinish(response);
+			if (info != null) {
+				finishInfo = info;
+			}
+		}
+	}
+
+	/**
+	 * 진단 로그용으로 종료 사유와 안전 차단 정보만 뽑는다. 없으면 null.
+	 * 응답 객체에는 HTTP 응답 헤더(sdkHttpResponse)도 들어 있으므로 응답을 통째로 문자열로 만들지 않는다.
+	 */
+	static String describeFinish(GenerateContentResponse response) {
+		List<String> parts = new ArrayList<>();
+		List<SafetyRating> ratings = new ArrayList<>();
+		response.promptFeedback().ifPresent(feedback -> {
+			feedback.blockReason().ifPresent(reason -> parts.add("blockReason=" + reason));
+			feedback.blockReasonMessage().ifPresent(message -> parts.add("blockReasonMessage=" + message));
+			feedback.safetyRatings().ifPresent(ratings::addAll);
+		});
+		response.candidates().filter(candidates -> !candidates.isEmpty()).map(List::getFirst).ifPresent(candidate -> {
+			candidate.finishReason().ifPresent(reason -> parts.add("finishReason=" + reason));
+			candidate.finishMessage().ifPresent(message -> parts.add("finishMessage=" + message));
+			candidate.safetyRatings().ifPresent(ratings::addAll);
+		});
+		List<String> blocked = ratings.stream()
+				.filter(rating -> rating.blocked().orElse(false))
+				.map(rating -> rating.category().map(Object::toString).orElse("UNKNOWN")
+						+ rating.probability().map(probability -> "(" + probability + ")").orElse(""))
+				.toList();
+		if (!blocked.isEmpty()) {
+			parts.add("blockedSafety=" + blocked);
+		}
+		return parts.isEmpty() ? null : String.join(", ", parts);
 	}
 }

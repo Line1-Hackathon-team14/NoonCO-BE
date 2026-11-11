@@ -223,6 +223,11 @@ class AnalysisStreamPingTest {
 		}
 
 		@Override
+		public String model() {
+			return "stub";
+		}
+
+		@Override
 		public void close() {
 			closed.countDown();
 		}

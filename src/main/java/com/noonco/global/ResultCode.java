@@ -28,6 +28,10 @@ public enum ResultCode {
 	PDF_UNREADABLE(HttpStatus.UNPROCESSABLE_CONTENT, "PDF 파일을 열 수 없습니다. 암호가 걸려 있거나 손상된 파일인지 확인해 주세요."),
 	PDF_TOO_MANY_PAGES(HttpStatus.UNPROCESSABLE_CONTENT, "PDF는 30쪽 이하만 올릴 수 있습니다."),
 	AI_BUSY(HttpStatus.SERVICE_UNAVAILABLE, "지금은 해설 요청이 많습니다. 잠시 후 다시 시도해 주세요."),
+	// 아래 셋은 해설 스트림 error 이벤트로만 보낸다 (HTTP 상태는 이미 200 으로 나간 뒤라 쓰이지 않는다)
+	UNREADABLE_IMAGE(HttpStatus.UNPROCESSABLE_CONTENT, "사진을 읽지 못했어요. 다시 촬영해 주세요."),
+	AI_FAILED(HttpStatus.BAD_GATEWAY, "해설을 만들지 못했어요. 잠시 후 다시 시도해 주세요."),
+	AI_TIMEOUT(HttpStatus.GATEWAY_TIMEOUT, "해설 생성이 오래 걸려 중단했어요. 다시 시도해 주세요."),
 	INTERNAL_ERROR(HttpStatus.INTERNAL_SERVER_ERROR, "서버 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.");
 
 	private final HttpStatus status;

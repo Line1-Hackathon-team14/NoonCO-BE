@@ -13,7 +13,7 @@ public interface LlmClient {
 	LlmStream stream(LlmRequest request);
 
 	/**
-	 * 실제로 호출하는 모델 이름. analysis.model 에 저장한다.
+	 * 기본으로 호출하는 모델 이름. 폴백하면 실제 응답 모델과 다를 수 있으므로 저장에는 {@link LlmStream#model()} 을 쓴다.
 	 */
 	String model();
 }

@@ -18,8 +18,16 @@ import com.google.genai.errors.ApiException;
 import com.google.genai.errors.ClientException;
 import com.google.genai.errors.ServerException;
 import com.google.genai.types.Blob;
+import com.google.genai.types.BlockedReason;
+import com.google.genai.types.Candidate;
 import com.google.genai.types.Content;
+import com.google.genai.types.FinishReason;
+import com.google.genai.types.GenerateContentResponse;
+import com.google.genai.types.GenerateContentResponsePromptFeedback;
+import com.google.genai.types.HarmCategory;
+import com.google.genai.types.HarmProbability;
 import com.google.genai.types.Part;
+import com.google.genai.types.SafetyRating;
 
 /**
  * API 를 호출하지 않고 요청 Content 구성과 예비 모델 폴백을 확인한다.
@@ -150,6 +158,44 @@ class GeminiLlmClientTest {
 	private static List<Part> parts(LlmRequest request) {
 		Content content = GeminiLlmClient.toContent(request);
 		return content.parts().orElseThrow();
+	}
+
+	@Test
+	void describeFinishReportsFinishReasonAndBlockedSafetyOnly() {
+		GenerateContentResponse response = GenerateContentResponse.builder()
+				.candidates(List.of(Candidate.builder()
+						.finishReason(FinishReason.Known.SAFETY)
+						.safetyRatings(List.of(
+								SafetyRating.builder().category(HarmCategory.Known.HARM_CATEGORY_DANGEROUS_CONTENT)
+										.probability(HarmProbability.Known.HIGH).blocked(true).build(),
+								SafetyRating.builder().category(HarmCategory.Known.HARM_CATEGORY_HARASSMENT)
+										.probability(HarmProbability.Known.NEGLIGIBLE).build()))
+						.build()))
+				.build();
+
+		assertThat(GeminiLlmClient.describeFinish(response))
+				.isEqualTo("finishReason=SAFETY, blockedSafety=[HARM_CATEGORY_DANGEROUS_CONTENT(HIGH)]");
+	}
+
+	@Test
+	void describeFinishReportsPromptBlock() {
+		GenerateContentResponse response = GenerateContentResponse.builder()
+				.promptFeedback(GenerateContentResponsePromptFeedback.builder()
+						.blockReason(BlockedReason.Known.PROHIBITED_CONTENT)
+						.blockReasonMessage("blocked"))
+				.build();
+
+		assertThat(GeminiLlmClient.describeFinish(response))
+				.isEqualTo("blockReason=PROHIBITED_CONTENT, blockReasonMessage=blocked");
+	}
+
+	@Test
+	void describeFinishIsNullWithoutFinishOrBlockInfo() {
+		GenerateContentResponse response = GenerateContentResponse.builder()
+				.candidates(List.of(Candidate.builder().build()))
+				.build();
+
+		assertThat(GeminiLlmClient.describeFinish(response)).isNull();
 	}
 
 	private LlmStream open(String fallbackModel, Function<String, TestResponse> request) {

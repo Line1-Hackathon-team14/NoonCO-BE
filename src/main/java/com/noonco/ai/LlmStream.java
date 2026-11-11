@@ -14,6 +14,14 @@ public interface LlmStream extends Iterable<String>, AutoCloseable {
 	 */
 	String model();
 
+	/**
+	 * 진단 로그용. 응답의 종료 사유(finishReason)·안전 차단 정보 요약이며, 제공하지 않거나 정보가 없으면 null 이다.
+	 * 요청·응답 헤더나 API 키는 담지 않는다.
+	 */
+	default String finishInfo() {
+		return null;
+	}
+
 	@Override
 	void close();
 }

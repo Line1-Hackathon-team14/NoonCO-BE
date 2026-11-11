@@ -126,7 +126,8 @@ public class AnalysisStreamService {
 			} else {
 				ResultCode failure = writer.isPastDeadline() ? ResultCode.AI_TIMEOUT : ResultCode.AI_FAILED;
 				if (e instanceof LlmOutputFormatException) {
-					log.warn("모델 출력 형식이 잘못되었습니다: analysisId={}, cause={}", start.analysisId(), e.getMessage());
+					log.warn("모델 출력 형식이 잘못되었습니다: analysisId={}, cause={}, {}", start.analysisId(), e.getMessage(),
+							outputSummary(state, writer.llmStream));
 				} else {
 					log.error("해설 생성 중 오류: analysisId={}, failure={}", start.analysisId(), failure, e);
 				}
@@ -162,6 +163,7 @@ public class AnalysisStreamService {
 
 		LlmOutputParser parser = new LlmOutputParser(start.sourceType(), summaryMaxLength);
 		for (String chunk : llmStream) {
+			state.received(chunk);
 			handle(writer, parser.feed(chunk), state);
 			if (state.unreadable) {
 				// 판독 불가면 나머지 출력은 쓰지 않으므로 더 받지 않는다
@@ -175,13 +177,23 @@ public class AnalysisStreamService {
 			log.warn("해설 생성이 제한 시간을 넘겨 중단했습니다: analysisId={}", start.analysisId());
 			return ResultCode.AI_TIMEOUT;
 		}
+		// 출력이 잘리지 않았을 때만 마무리한다. 메타 줄이 줄바꿈 없이 끝났으면 메타·판독 불가 이벤트가 여기서야 나오고,
+		// 문장 단위로 보류 중이던 마지막 요약도 여기서 나오므로 판정·저장은 모두 이 뒤에 한다
+		handle(writer, parser.finish(), state);
 		if (state.unreadable) {
 			log.info("이미지를 판독할 수 없다는 응답입니다: analysisId={}", start.analysisId());
 			return ResultCode.UNREADABLE_IMAGE;
 		}
-		handle(writer, parser.finish(), state);
 		if (state.meta == null) {
-			log.warn("메타 없이 해설 스트림이 끝났습니다: analysisId={}", start.analysisId());
+			// 파서는 메타 줄이 없거나 잘못되면 예외를 던지므로 여기에 오지 않아야 한다. 오면 원인 진단용 정보를 남긴다
+			log.warn("메타 없이 해설 스트림이 끝났습니다: analysisId={}, unreadable={}, {}", start.analysisId(),
+					state.unreadable, outputSummary(state, llmStream));
+			return ResultCode.AI_FAILED;
+		}
+		if (state.summary.toString().isBlank()) {
+			// 요약(한 번 탭)이 기본 해설이므로, 메타만 있거나 상세만 있는 출력은 완료로 저장하지 않는다 (이미지·PDF 공통)
+			log.warn("요약 없이 해설 스트림이 끝났습니다: analysisId={}, detailLength={}, {}", start.analysisId(),
+					state.detail.length(), outputSummary(state, llmStream));
 			return ResultCode.AI_FAILED;
 		}
 
@@ -247,13 +259,41 @@ public class AnalysisStreamService {
 		}
 	}
 
+	/**
+	 * 진단 로그용 요약: 받은 텍스트 총 글자 수, 앞부분, 응답 종료 사유·안전 차단 정보(제공될 때).
+	 */
+	private static String outputSummary(StreamState state, LlmStream llmStream) {
+		String finishInfo = llmStream == null ? null : llmStream.finishInfo();
+		return "receivedLength=" + state.receivedLength + ", head=\"" + escapeNewlines(state.head) + "\", finishInfo="
+				+ finishInfo;
+	}
+
+	private static String escapeNewlines(CharSequence text) {
+		return text.toString().replace("\r", "\\r").replace("\n", "\\n");
+	}
+
 	private static final class StreamState {
+
+		// 진단 로그에 남길 받은 텍스트 앞부분 길이(Unicode code point 수)
+		private static final int HEAD_LENGTH = 100;
 
 		private LlmOutputEvent.Meta meta;
 		private boolean unreadable;
 		private boolean completed;
 		private final StringBuilder summary = new StringBuilder();
 		private final StringBuilder detail = new StringBuilder();
+		// LLM 에서 받은 원문의 총 글자 수(Unicode code point 수)와 앞부분
+		private long receivedLength;
+		private final StringBuilder head = new StringBuilder();
+
+		void received(String chunk) {
+			int length = chunk.codePointCount(0, chunk.length());
+			int headRemaining = HEAD_LENGTH - (int)Math.min(receivedLength, HEAD_LENGTH);
+			if (headRemaining > 0) {
+				head.append(chunk, 0, chunk.offsetByCodePoints(0, Math.min(headRemaining, length)));
+			}
+			receivedLength += length;
+		}
 	}
 
 	/**

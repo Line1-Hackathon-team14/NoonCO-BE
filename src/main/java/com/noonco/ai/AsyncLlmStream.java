@@ -28,6 +28,13 @@ final class AsyncLlmStream<R extends AsyncLlmStream.ModelResponse> extends Abstr
 	interface ModelResponse extends AutoCloseable {
 
 		String model();
+
+		/**
+		 * {@link LlmStream#finishInfo()} 와 같다. 조각을 읽으면서 채워질 수 있다.
+		 */
+		default String finishInfo() {
+			return null;
+		}
 	}
 
 	private final CompletableFuture<R> response = new CompletableFuture<>();
@@ -69,6 +76,14 @@ final class AsyncLlmStream<R extends AsyncLlmStream.ModelResponse> extends Abstr
 			return null;
 		}
 		return response.getNow(null).model();
+	}
+
+	@Override
+	public String finishInfo() {
+		if (!response.isDone() || response.isCompletedExceptionally()) {
+			return null;
+		}
+		return response.getNow(null).finishInfo();
 	}
 
 	@Override

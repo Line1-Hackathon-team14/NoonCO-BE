@@ -30,12 +30,19 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.stream.Stream;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.system.CapturedOutput;
+import org.springframework.boot.test.system.OutputCaptureExtension;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.DynamicPropertyRegistry;
@@ -478,6 +485,128 @@ class AnalysisControllerTest {
 
 		assertThat(lines.getLast()).isEqualTo(AI_FAILED_ERROR_LINE);
 		assertThat(latestAnalysis(materialId).getStatus()).isEqualTo(AnalysisStatus.FAILED);
+	}
+
+	@Test
+	@ExtendWith(OutputCaptureExtension.class)
+	void unreadableWithoutNewlineIsNotReportedAsMissingMeta(CapturedOutput output) throws Exception {
+		// 실제 Gemini 에서 메타 없이 끝났다며 AI_FAILED 가 난 사례 재현: 판독 불가 메타 줄이 줄바꿈 없이 끝나
+		// 판독 불가 이벤트가 parser.finish 에서야 나온다
+		doReturn(new StubLlmStream(List.of("{\"unreadable\":", "true}"), null)).when(llmClient).stream(any());
+
+		List<String> lines = streamLines(materialId);
+
+		assertThat(lines.getLast()).isEqualTo(UNREADABLE_ERROR_LINE);
+		assertThat(latestAnalysis(materialId).getStatus()).isEqualTo(AnalysisStatus.UNREADABLE);
+		assertThat(output.getOut()).contains("이미지를 판독할 수 없다는 응답입니다")
+				.doesNotContain("메타 없이 해설 스트림이 끝났습니다");
+	}
+
+	@ParameterizedTest(name = "{0}")
+	@MethodSource("unreadableOutputs")
+	void unreadableOutputSendsUnreadableImageAndSavesUnreadable(String description, List<String> chunks)
+			throws Exception {
+		StubLlmStream unreadable = new StubLlmStream(chunks, null);
+		doReturn(unreadable).when(llmClient).stream(any());
+
+		List<String> lines = streamLines(materialId);
+
+		Long analysisId = latestAnalysis(materialId).getId();
+		assertThat(lines).containsExactly(
+				"{\"type\":\"started\",\"analysisId\":" + analysisId + ",\"difficulty\":\"HARD\"}",
+				"{\"type\":\"progress\",\"stage\":\"ANALYZING\"}",
+				UNREADABLE_ERROR_LINE);
+		assertThat(latestAnalysis(materialId).getStatus()).isEqualTo(AnalysisStatus.UNREADABLE);
+		assertThat(unreadable.isClosed()).isTrue();
+	}
+
+	static Stream<Arguments> unreadableOutputs() {
+		return Stream.of(
+				Arguments.of("줄바꿈 없음", List.of("{\"unreadable\":true}")),
+				Arguments.of("줄바꿈 있음", List.of("{\"unreadable\":true}\n")),
+				Arguments.of("여러 조각, 줄바꿈 없음", List.of("{\"unrea", "dable\":", " tr", "ue}")));
+	}
+
+	@Test
+	void lastSummaryReleasedOnlyByFinishIsSentAndSaved() throws Exception {
+		// 이미지 요약은 문장 단위로 나가므로, 끝맺음 없는 마지막 문장은 parser.finish 에서야 delta 로 나온다
+		doReturn(new StubLlmStream(List.of("{\"visualType\":\"BAR\",\"title\":\"막대\"}\n", "첫 문장입니다. 마지막 문장"), null))
+				.when(llmClient).stream(any());
+
+		List<String> lines = streamLines(materialId);
+
+		StringBuilder sent = new StringBuilder();
+		for (String line : lines) {
+			JsonNode node = jsonMapper.readTree(line);
+			if (node.get("type").stringValue().equals("delta")) {
+				sent.append(node.get("text").stringValue());
+			}
+		}
+		assertThat(sent.toString()).isEqualTo("첫 문장입니다. 마지막 문장");
+		assertThat(lines.getLast()).startsWith("{\"type\":\"done\"");
+		assertThat(latestAnalysis(materialId).getSummary()).isEqualTo("첫 문장입니다. 마지막 문장");
+	}
+
+	@Test
+	void metaLineWithoutNewlineIsHandledByFinish() throws Exception {
+		// 메타 줄이 줄바꿈 없이 끝나 메타 이벤트가 parser.finish 에서야 나와도 meta 를 보내고 판정한다.
+		// 본문이 없으므로 요약 없음으로 AI_FAILED 가 된다
+		doReturn(new StubLlmStream(List.of("{\"visualType\":\"BAR\",", "\"title\":\"막대\"}"), null))
+				.when(llmClient).stream(any());
+
+		List<String> lines = streamLines(materialId);
+
+		assertThat(lines.get(2)).isEqualTo("{\"type\":\"meta\",\"visualType\":\"BAR\",\"title\":\"막대\"}");
+		assertThat(lines.get(3)).isEqualTo("{\"type\":\"progress\",\"stage\":\"GENERATING\"}");
+		assertThat(lines.getLast()).isEqualTo(AI_FAILED_ERROR_LINE);
+	}
+
+	@ParameterizedTest(name = "{0}")
+	@MethodSource("outputsWithoutSummary")
+	void outputWithoutSummarySendsAiFailedAndAllowsRetry(String description, SourceType sourceType, List<String> chunks)
+			throws Exception {
+		Long targetId = sourceType == SourceType.PDF ? savePdfMaterial(userId) : materialId;
+		doReturn(new StubLlmStream(chunks, null)).when(llmClient).stream(any());
+
+		List<String> lines = streamLines(targetId);
+
+		assertThat(lines).noneMatch(line -> line.contains("\"done\""));
+		assertThat(lines.getLast()).isEqualTo(AI_FAILED_ERROR_LINE);
+		Analysis failed = latestAnalysis(targetId);
+		assertThat(failed.getStatus()).isEqualTo(AnalysisStatus.FAILED);
+		assertThat(failed.getSummary()).isNull();
+		assertThat(failed.getDetail()).isNull();
+		assertThat(materialRepository.findById(targetId).orElseThrow().getTitle()).isNull();
+
+		expectRetryCompletes(targetId, 2);
+	}
+
+	static Stream<Arguments> outputsWithoutSummary() {
+		String imageMeta = "{\"visualType\":\"BAR\",\"title\":\"막대\"}\n";
+		String pdfMeta = "{\"title\":\"보고서\"}\n";
+		return Stream.of(
+				Arguments.of("이미지 메타만", SourceType.IMAGE, List.of(imageMeta)),
+				Arguments.of("이미지 공백뿐인 요약", SourceType.IMAGE, List.of(imageMeta, "  \t ", " \n  ")),
+				Arguments.of("이미지 상세만", SourceType.IMAGE, List.of(imageMeta, "@@DETAIL@@\n", "상세 해설만 있습니다.\n")),
+				Arguments.of("PDF 메타만", SourceType.PDF, List.of(pdfMeta)),
+				Arguments.of("PDF 공백뿐인 요약", SourceType.PDF, List.of(pdfMeta, "   ", "\t \n ")),
+				Arguments.of("PDF 상세만", SourceType.PDF, List.of(pdfMeta, "@@DETAIL@@\n상세 해설만 있습니다.\n")));
+	}
+
+	@Test
+	@ExtendWith(OutputCaptureExtension.class)
+	void malformedOutputLogsHeadWithEscapedNewlinesAndLength(CapturedOutput output) throws Exception {
+		String longLine = "가".repeat(120);
+		// 첫 줄은 두 번째 조각의 줄바꿈에서 끝나므로, 형식 오류가 나기 전에 두 조각을 모두 받는다
+		doReturn(new StubLlmStream(List.of("햄버거 사진입니다.\r", "\n" + longLine), null)).when(llmClient).stream(any());
+
+		List<String> lines = streamLines(materialId);
+
+		assertThat(lines.getLast()).isEqualTo(AI_FAILED_ERROR_LINE);
+		// 앞부분은 100자까지만, 줄바꿈은 \n·\r 로 표시한다
+		String head = "햄버거 사진입니다.\\r\\n" + "가".repeat(100 - "햄버거 사진입니다.\r\n".length());
+		assertThat(output.getOut()).contains("모델 출력 형식이 잘못되었습니다")
+				.contains("receivedLength=" + (12 + 120) + ", head=\"" + head + "\", finishInfo=null");
 	}
 
 	@Test

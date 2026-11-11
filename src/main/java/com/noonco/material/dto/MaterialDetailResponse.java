@@ -45,12 +45,14 @@ public record MaterialDetailResponse(
 			Difficulty difficulty,
 			@Schema(description = "해설 본문", example = "이 그래프는 2020년부터 2025년까지 월평균 기온을 보여 줘요...")
 			String summary,
+			@Schema(description = "축·수치 상세 해설(두 번 탭). 없으면 null", nullable = true)
+			String detail,
 			@Schema(description = "해설 요청 시각(KST)", example = "2026-11-09T14:30:05")
 			LocalDateTime createdAt) {
 
 		static AnalysisResponse of(Analysis analysis) {
 			return new AnalysisResponse(analysis.getId(), analysis.getVisualType(), analysis.getDifficulty(),
-					analysis.getSummary(), analysis.getCreatedAt());
+					analysis.getSummary(), analysis.getDetail(), analysis.getCreatedAt());
 		}
 	}
 }

@@ -152,7 +152,7 @@ class MaterialHistoryServiceTest {
 
 	@Test
 	void detailIncludesCompletedAnalysis() {
-		Long materialId = completed(upload(userId), VisualType.LINE);
+		Long materialId = completed(upload(userId), VisualType.LINE, "축·수치 상세 해설");
 		flushAndClear();
 
 		MaterialDetailResponse detail = materialService.getMaterial(userId, materialId);
@@ -162,8 +162,21 @@ class MaterialHistoryServiceTest {
 		assertThat(detail.originalFilename()).isEqualTo("chart.png");
 		assertThat(detail.analysis()).isNotNull();
 		assertThat(detail.analysis().summary()).isEqualTo("해설 본문");
+		assertThat(detail.analysis().detail()).isEqualTo("축·수치 상세 해설");
 		assertThat(detail.analysis().visualType()).isEqualTo(VisualType.LINE);
 		assertThat(detail.analysis().difficulty()).isEqualTo(Difficulty.NORMAL);
+	}
+
+	@Test
+	void detailHasNullDetailWhenAnalysisHasNoDetail() {
+		Long materialId = completed(upload(userId), VisualType.LINE);
+		flushAndClear();
+
+		MaterialDetailResponse.AnalysisResponse analysis = materialService.getMaterial(userId, materialId).analysis();
+
+		assertThat(analysis).isNotNull();
+		assertThat(analysis.summary()).isEqualTo("해설 본문");
+		assertThat(analysis.detail()).isNull();
 	}
 
 	@Test
@@ -267,9 +280,13 @@ class MaterialHistoryServiceTest {
 	}
 
 	private Long completed(Long materialId, VisualType visualType) {
+		return completed(materialId, visualType, null);
+	}
+
+	private Long completed(Long materialId, VisualType visualType, String detail) {
 		Material material = materialRepository.findById(materialId).orElseThrow();
 		Analysis analysis = analysisRepository.save(new Analysis(material, Difficulty.NORMAL));
-		analysis.complete(visualType, "해설 본문", null, "model", "v1");
+		analysis.complete(visualType, "해설 본문", detail, "model", "v1");
 		material.changeTitle("제목");
 		return materialId;
 	}

@@ -14,6 +14,8 @@ import jakarta.persistence.Id;
 import jakarta.persistence.JoinColumn;
 import jakarta.persistence.ManyToOne;
 import jakarta.persistence.Table;
+import java.time.Duration;
+import java.time.LocalDateTime;
 import lombok.AccessLevel;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
@@ -73,5 +75,13 @@ public class Analysis extends BaseTimeEntity {
 
 	public void fail() {
 		this.status = AnalysisStatus.FAILED;
+	}
+
+	/**
+	 * 서버가 중간에 내려가 PENDING 으로 남은 분석은 제한 시간이 지나면 진행 중으로 보지 않는다.
+	 * 해설 시작과 자료 삭제가 같은 기준을 쓴다.
+	 */
+	public boolean isInProgress(Duration timeout) {
+		return status == AnalysisStatus.PENDING && getCreatedAt().plus(timeout).isAfter(LocalDateTime.now());
 	}
 }

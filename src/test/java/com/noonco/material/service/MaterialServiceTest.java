@@ -27,6 +27,7 @@ import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.context.transaction.TestTransaction;
 
+import com.noonco.ai.LlmConfig;
 import com.noonco.global.ResultCode;
 import com.noonco.global.file.FileStorage;
 import com.noonco.global.file.FileValidator;
@@ -45,7 +46,7 @@ import jakarta.persistence.EntityManager;
  */
 @DataJpaTest
 @AutoConfigureTestDatabase(replace = AutoConfigureTestDatabase.Replace.NONE)
-@Import({ MaterialService.class, FileValidator.class, FileStorage.class })
+@Import({ MaterialService.class, FileValidator.class, FileStorage.class, LlmConfig.class })
 class MaterialServiceTest {
 
 	private static final Path STORAGE_DIR = createTempDir();

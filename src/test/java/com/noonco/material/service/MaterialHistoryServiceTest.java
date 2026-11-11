@@ -269,7 +269,7 @@ class MaterialHistoryServiceTest {
 	private Long completed(Long materialId, VisualType visualType) {
 		Material material = materialRepository.findById(materialId).orElseThrow();
 		Analysis analysis = analysisRepository.save(new Analysis(material, Difficulty.NORMAL));
-		analysis.complete(visualType, "해설 본문", "model", "v1");
+		analysis.complete(visualType, "해설 본문", null, "model", "v1");
 		material.changeTitle("제목");
 		return materialId;
 	}

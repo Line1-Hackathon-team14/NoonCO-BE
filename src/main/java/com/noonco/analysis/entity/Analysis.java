@@ -49,6 +49,10 @@ public class Analysis extends BaseTimeEntity {
 	@Column(columnDefinition = "TEXT")
 	private String summary;
 
+	// 축·수치 상세 해설. 모델 출력에 상세 구간이 없으면 null
+	@Column(columnDefinition = "TEXT")
+	private String detail;
+
 	@Enumerated(EnumType.STRING)
 	@JdbcTypeCode(SqlTypes.VARCHAR)
 	@Column(nullable = false, length = 20)
@@ -65,9 +69,10 @@ public class Analysis extends BaseTimeEntity {
 		this.difficulty = difficulty;
 	}
 
-	public void complete(VisualType visualType, String summary, String model, String promptVersion) {
+	public void complete(VisualType visualType, String summary, String detail, String model, String promptVersion) {
 		this.visualType = visualType;
 		this.summary = summary;
+		this.detail = detail;
 		this.model = model;
 		this.promptVersion = promptVersion;
 		this.status = AnalysisStatus.COMPLETED;

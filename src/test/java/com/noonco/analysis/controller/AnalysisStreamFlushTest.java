@@ -41,7 +41,7 @@ import com.noonco.user.repository.UserSettingsRepository;
 
 /**
  * 실제 Tomcat 에 HTTP 요청을 보내, 해설 스트림 이벤트가 끝날 때 한꺼번에 오지 않고 생성되는 대로 도착하는지 확인한다. (#39)
- * Fake LLM 조각 지연을 크게 잡아(9조각 × 500ms = 4.5초) 버퍼링 여부가 시간차로 분명히 드러나게 한다.
+ * Fake LLM 조각 지연을 크게 잡아(14조각 × 500ms = 7초) 버퍼링 여부가 시간차로 분명히 드러나게 한다.
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
 		properties = { "llm.provider=fake", "llm.fake.chunk-delay=500ms", "llm.gemini.timeout=60s" })
@@ -112,7 +112,7 @@ class AnalysisStreamFlushTest {
 		List<Long> deltas = arrivalOf(arrivals, "\"delta\"");
 		assertThat(deltas).hasSizeGreaterThan(2);
 
-		// started 는 LLM 조각을 기다리기 전에 보내므로, Fake LLM 전체 소요(약 4.5초)보다 훨씬 먼저 와야 한다.
+		// started 는 LLM 조각을 기다리기 전에 보내므로, Fake LLM 전체 소요(약 7초)보다 훨씬 먼저 와야 한다.
 		// 한꺼번에 오면 두 시각 차이는 거의 0 이다.
 		assertThat(done - started).as("started → done 도착 간격(ms)")
 				.isGreaterThanOrEqualTo(CHUNK_DELAY_MILLIS * 6);

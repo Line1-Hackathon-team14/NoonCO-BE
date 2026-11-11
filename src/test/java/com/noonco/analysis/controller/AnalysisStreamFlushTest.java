@@ -48,6 +48,8 @@ import com.noonco.user.repository.UserSettingsRepository;
 class AnalysisStreamFlushTest {
 
 	private static final long CHUNK_DELAY_MILLIS = 500;
+	// 개별 delta 간격 하한. 조각 지연보다 훨씬 낮게 잡아 클라이언트 쪽 지연에 흔들리지 않게 한다
+	private static final long MIN_DELTA_GAP_MILLIS = 100;
 	private static final Path STORAGE_DIR = createTempDir();
 	private static final byte[] PNG_BYTES = {(byte)0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D};
 	private static final String STORED_KEY = UUID.randomUUID() + ".png";
@@ -114,11 +116,18 @@ class AnalysisStreamFlushTest {
 		// 한꺼번에 오면 두 시각 차이는 거의 0 이다.
 		assertThat(done - started).as("started → done 도착 간격(ms)")
 				.isGreaterThanOrEqualTo(CHUNK_DELAY_MILLIS * 6);
-		// delta 는 조각(500ms)마다 하나씩 생기므로, 이웃한 delta 사이에도 시간차가 있어야 한다.
+		// delta 는 조각(500ms)마다 하나씩 생기므로 시간차를 두고 도착해야 한다.
+		// 클라이언트 스레드가 잠깐 밀리면 몇 줄이 붙어 올 수 있으니, 개별 간격은 낮은 하한으로 과반만 보고
+		// 전체 간격은 기대치(조각 지연 × (delta 수 - 1))의 절반 이상인지 본다. 몰아서 오면 둘 다 거의 0 이다.
+		List<Long> gaps = new ArrayList<>();
 		for (int i = 1; i < deltas.size(); i++) {
-			assertThat(deltas.get(i) - deltas.get(i - 1)).as("delta %d → %d 도착 간격(ms)", i - 1, i)
-					.isGreaterThanOrEqualTo(CHUNK_DELAY_MILLIS / 2);
+			gaps.add(deltas.get(i) - deltas.get(i - 1));
 		}
+		assertThat(gaps.stream().filter(gap -> gap >= MIN_DELTA_GAP_MILLIS).count())
+				.as("%dms 이상 벌어진 delta 간격 수 (전체 간격: %s)", MIN_DELTA_GAP_MILLIS, gaps)
+				.isGreaterThan(gaps.size() / 2);
+		assertThat(deltas.getLast() - deltas.getFirst()).as("첫 delta → 마지막 delta 도착 간격(ms)")
+				.isGreaterThanOrEqualTo((deltas.size() - 1) * CHUNK_DELAY_MILLIS / 2);
 	}
 
 	private static List<Long> arrivalOf(List<Arrival> arrivals, String type) {

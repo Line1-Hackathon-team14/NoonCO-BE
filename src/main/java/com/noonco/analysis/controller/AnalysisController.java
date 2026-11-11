@@ -33,7 +33,9 @@ public class AnalysisController {
 	@Operation(summary = "해설 생성 스트림", description = """
 			사용자 설정 난이도로 해설을 만들어 NDJSON(한 줄에 JSON 하나)으로 보낸다.
 			이벤트 순서: started → progress(ANALYZING) → meta → progress(GENERATING) → delta(여러 줄) → done.
-			실패·취소된 자료만 다시 요청할 수 있다. 스트림 시작 전 오류는 일반 JSON 에러로 응답한다.""")
+			started 이후 3초마다 {"type":"ping"} 줄이 섞여 올 수 있으며, 연결 유지용이므로 무시한다.
+			실패·취소된 자료만 다시 요청할 수 있다. 스트림 시작 전 오류는 일반 JSON 에러로 응답한다.
+			동시 실행 수를 넘으면 503 AI_BUSY 로 응답한다.""")
 	@PostMapping
 	public ResponseEntity<StreamingResponseBody> createAnalysis(
 			@Parameter(hidden = true) @AuthenticationPrincipal Long userId, @PathVariable Long materialId,

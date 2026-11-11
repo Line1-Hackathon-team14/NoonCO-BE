@@ -16,6 +16,7 @@ import com.noonco.analysis.service.AnalysisStreamService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.tags.Tag;
+import jakarta.servlet.http.HttpServletResponse;
 
 import lombok.RequiredArgsConstructor;
 
@@ -35,8 +36,12 @@ public class AnalysisController {
 			실패·취소된 자료만 다시 요청할 수 있다. 스트림 시작 전 오류는 일반 JSON 에러로 응답한다.""")
 	@PostMapping
 	public ResponseEntity<StreamingResponseBody> createAnalysis(
-			@Parameter(hidden = true) @AuthenticationPrincipal Long userId, @PathVariable Long materialId) {
+			@Parameter(hidden = true) @AuthenticationPrincipal Long userId, @PathVariable Long materialId,
+			HttpServletResponse response) {
 		StreamingResponseBody body = analysisStreamService.stream(userId, materialId);
-		return ResponseEntity.ok().contentType(NDJSON_UTF8).body(body);
+		// Spring 7 이 StreamingResponseBody 에 넘기는 스트림은 flush 를 무시한다
+		// (spring.http.response.flush.enabled 기본값 false → StreamUtils.nonFlushing).
+		// 그대로 쓰면 이벤트가 끝날 때 한꺼번에 전송되므로, flush 가 동작하는 서블릿 출력 스트림에 직접 쓴다. (#39)
+		return ResponseEntity.ok().contentType(NDJSON_UTF8).body(out -> body.writeTo(response.getOutputStream()));
 	}
 }

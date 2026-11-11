@@ -126,8 +126,10 @@ public class AnalysisStreamService {
 			} else {
 				ResultCode failure = writer.isPastDeadline() ? ResultCode.AI_TIMEOUT : ResultCode.AI_FAILED;
 				if (e instanceof LlmOutputFormatException) {
-					log.warn("모델 출력 형식이 잘못되었습니다: analysisId={}, cause={}, {}", start.analysisId(), e.getMessage(),
-							outputSummary(state, writer.llmStream));
+					// 파서 예외 메시지에는 모델 출력(메타 줄)이 들어 있으므로 WARN 에는 넣지 않고 DEBUG 로만 남긴다
+					log.debug("모델 출력 형식 오류 상세: analysisId={}, message={}", start.analysisId(), e.getMessage());
+					log.warn("모델 출력 형식이 잘못되었습니다: analysisId={}, {}", start.analysisId(),
+							outputSummary(start.analysisId(), state, writer.llmStream));
 				} else {
 					log.error("해설 생성 중 오류: analysisId={}, failure={}", start.analysisId(), failure, e);
 				}
@@ -150,14 +152,23 @@ public class AnalysisStreamService {
 	/**
 	 * done 을 보냈으면 null, 실패를 알려야 하면 그 코드를 반환한다.
 	 *
-	 * @throws IOException 연결이 끊겨 더 보낼 수 없을 때 (본문 쓰기 실패, ping 실패 감지, 비동기 요청 제한 시간 초과로 인한 인터럽트)
+	 * @throws IOException 연결이 끊겨 더 보낼 수 없을 때 (본문 쓰기 실패, ping 실패 감지, 비동기 요청 제한 시간 초과로 인한 인터럽트).
+	 *                     입력 파일 읽기 실패는 여기에 해당하지 않고 AI_FAILED 를 반환한다
 	 */
 	private ResultCode generate(AnalysisStart start, StreamWriter writer, StreamState state) throws IOException {
 		writer.write(AnalysisStreamEvent.started(start.analysisId(), start.difficulty()));
 		writer.startWatchdog();
 		writer.write(AnalysisStreamEvent.progress(AnalysisStreamEvent.STAGE_ANALYZING));
 
-		byte[] file = fileStorage.load(start.filePath()).getContentAsByteArray();
+		byte[] file;
+		try {
+			file = fileStorage.load(start.filePath()).getContentAsByteArray();
+		} catch (IOException e) {
+			// 입력 파일 읽기 실패다. 출력 연결은 살아 있으므로 연결 끊김으로 처리하지 않고 실패를 알린다
+			log.error("해설할 자료 파일을 읽지 못했습니다: analysisId={}, materialId={}", start.analysisId(),
+					start.materialId(), e);
+			return ResultCode.AI_FAILED;
+		}
 		LlmStream llmStream = llmClient.stream(LlmRequest.ofFile(start.prompt().content(), file, start.mimeType()));
 		writer.attach(llmStream);
 
@@ -187,13 +198,13 @@ public class AnalysisStreamService {
 		if (state.meta == null) {
 			// 파서는 메타 줄이 없거나 잘못되면 예외를 던지므로 여기에 오지 않아야 한다. 오면 원인 진단용 정보를 남긴다
 			log.warn("메타 없이 해설 스트림이 끝났습니다: analysisId={}, unreadable={}, {}", start.analysisId(),
-					state.unreadable, outputSummary(state, llmStream));
+					state.unreadable, outputSummary(start.analysisId(), state, llmStream));
 			return ResultCode.AI_FAILED;
 		}
 		if (state.summary.toString().isBlank()) {
 			// 요약(한 번 탭)이 기본 해설이므로, 메타만 있거나 상세만 있는 출력은 완료로 저장하지 않는다 (이미지·PDF 공통)
 			log.warn("요약 없이 해설 스트림이 끝났습니다: analysisId={}, detailLength={}, {}", start.analysisId(),
-					state.detail.length(), outputSummary(state, llmStream));
+					state.detail.length(), outputSummary(start.analysisId(), state, llmStream));
 			return ResultCode.AI_FAILED;
 		}
 
@@ -231,11 +242,16 @@ public class AnalysisStreamService {
 	/**
 	 * LLM 호출을 먼저 끊고, 상태를 저장한 뒤 error 를 보낸다.
 	 * 저장을 먼저 해야 error 를 받은 클라이언트가 곧바로 다시 요청해도 진행 중(ANALYSIS_IN_PROGRESS)으로 막히지 않는다.
+	 * error 의 status 는 저장된 상태라는 약속이므로, 저장에 실패하면 error 없이 끝낸다(클라이언트에는 중단된 스트림으로 보인다).
+	 * 그 경우 analysis 는 PENDING 으로 남을 수 있어, run 의 정리 단계에서 FAILED 저장을 한 번 더 시도한다.
 	 */
 	private void sendFailure(Long analysisId, StreamWriter writer, ResultCode failure) {
 		AnalysisStatus status = failure == ResultCode.UNREADABLE_IMAGE ? AnalysisStatus.UNREADABLE : AnalysisStatus.FAILED;
 		writer.closeLlmStream();
-		saveFailureQuietly(analysisId, status);
+		if (!saveFailureQuietly(analysisId, status)) {
+			log.warn("실패 상태를 저장하지 못해 error 없이 해설 스트림을 끝냅니다: analysisId={}, failure={}", analysisId, failure);
+			return;
+		}
 		try {
 			writer.writeLast(AnalysisStreamEvent.error(failure, status));
 		} catch (IOException e) {
@@ -246,26 +262,33 @@ public class AnalysisStreamService {
 
 	/**
 	 * 아직 PENDING 일 때만 바뀌므로, 이미 저장한 실패 상태나 완료 상태를 덮어쓰지 않는다.
+	 *
+	 * @return 저장 중 오류가 없었으면 true
 	 */
-	private void saveFailureQuietly(Long analysisId, AnalysisStatus status) {
+	private boolean saveFailureQuietly(Long analysisId, AnalysisStatus status) {
 		try {
 			if (status == AnalysisStatus.UNREADABLE) {
 				analysisService.markUnreadable(analysisId);
 			} else {
 				analysisService.fail(analysisId);
 			}
+			return true;
 		} catch (RuntimeException e) {
 			log.error("analysis 실패 상태를 저장하지 못했습니다: analysisId={}, status={}", analysisId, status, e);
+			return false;
 		}
 	}
 
 	/**
-	 * 진단 로그용 요약: 받은 텍스트 총 글자 수, 앞부분, 응답 종료 사유·안전 차단 정보(제공될 때).
+	 * 진단 로그용 요약: 받은 텍스트 총 글자 수, 응답 종료 사유·안전 차단 정보(제공될 때).
+	 * 모델 출력에는 사용자 자료 내용이 담길 수 있으므로 출력 앞부분은 넣지 않고 DEBUG 로만 따로 남긴다.
 	 */
-	private static String outputSummary(StreamState state, LlmStream llmStream) {
+	private static String outputSummary(Long analysisId, StreamState state, LlmStream llmStream) {
+		if (log.isDebugEnabled()) {
+			log.debug("해설 스트림 모델 출력 앞부분: analysisId={}, head=\"{}\"", analysisId, escapeNewlines(state.head));
+		}
 		String finishInfo = llmStream == null ? null : llmStream.finishInfo();
-		return "receivedLength=" + state.receivedLength + ", head=\"" + escapeNewlines(state.head) + "\", finishInfo="
-				+ finishInfo;
+		return "receivedLength=" + state.receivedLength + ", finishInfo=" + finishInfo;
 	}
 
 	private static String escapeNewlines(CharSequence text) {

@@ -41,6 +41,7 @@ public class AnalysisController {
 			스트림 도중 실패하면 done 대신 error 가 마지막 줄로 온다(HTTP 상태는 200, 이후 ping 포함 아무것도 오지 않는다).
 			error: {"type":"error","code":"...","message":"...","status":"UNREADABLE"|"FAILED"}
 			code: UNREADABLE_IMAGE(사진 판독 불가, status UNREADABLE), AI_FAILED(생성 실패), AI_TIMEOUT(제한 시간 초과)
+			done·error 없이 스트림이 끝나면 연결 끊김과 같이 중단된 것으로 보고, 잠시 후 다시 요청한다.
 			실패·취소된 자료만 다시 요청할 수 있다. 스트림 시작 전 오류는 일반 JSON 에러로 응답한다.
 			동시 실행 수를 넘으면 503 AI_BUSY 로 응답한다.""")
 	@PostMapping

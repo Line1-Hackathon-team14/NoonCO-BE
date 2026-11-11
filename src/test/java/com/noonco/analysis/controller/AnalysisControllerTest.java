@@ -3,8 +3,12 @@ package com.noonco.analysis.controller;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.asyncDispatch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
@@ -14,6 +18,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.OutputStream;
 import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
@@ -39,11 +44,13 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.system.CapturedOutput;
 import org.springframework.boot.test.system.OutputCaptureExtension;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
+import org.springframework.core.io.AbstractResource;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
@@ -53,6 +60,8 @@ import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBody;
 
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.Logger;
 import com.noonco.ai.LlmClient;
 import com.noonco.ai.LlmInput;
 import com.noonco.ai.LlmRequest;
@@ -66,6 +75,7 @@ import com.noonco.analysis.service.AnalysisService;
 import com.noonco.analysis.service.AnalysisStreamService;
 import com.noonco.global.ResultCode;
 import com.noonco.global.exception.BusinessException;
+import com.noonco.global.file.FileStorage;
 import com.noonco.global.jwt.JwtTokenProvider;
 import com.noonco.material.entity.Material;
 import com.noonco.material.entity.SourceType;
@@ -121,7 +131,7 @@ class AnalysisControllerTest {
 	@Autowired JwtTokenProvider jwtTokenProvider;
 	@Autowired JsonMapper jsonMapper;
 	@Autowired PromptLoader promptLoader;
-	@Autowired AnalysisService analysisService;
+	@MockitoSpyBean AnalysisService analysisService;
 	@Autowired AnalysisStreamService analysisStreamService;
 	@Autowired AnalysisRepository analysisRepository;
 	@Autowired MaterialRepository materialRepository;
@@ -131,6 +141,7 @@ class AnalysisControllerTest {
 	@Autowired TransactionTemplate transactionTemplate;
 
 	@MockitoSpyBean LlmClient llmClient;
+	@MockitoSpyBean FileStorage fileStorage;
 
 	private final List<Long> userIds = new ArrayList<>();
 	private Long userId;
@@ -595,18 +606,102 @@ class AnalysisControllerTest {
 
 	@Test
 	@ExtendWith(OutputCaptureExtension.class)
-	void malformedOutputLogsHeadWithEscapedNewlinesAndLength(CapturedOutput output) throws Exception {
-		String longLine = "가".repeat(120);
-		// 첫 줄은 두 번째 조각의 줄바꿈에서 끝나므로, 형식 오류가 나기 전에 두 조각을 모두 받는다
-		doReturn(new StubLlmStream(List.of("햄버거 사진입니다.\r", "\n" + longLine), null)).when(llmClient).stream(any());
+	void malformedOutputWarnLogsLengthWithoutModelOutput(CapturedOutput output) throws Exception {
+		stubMalformedOutput();
 
 		List<String> lines = streamLines(materialId);
 
 		assertThat(lines.getLast()).isEqualTo(AI_FAILED_ERROR_LINE);
+		// 모델 출력에는 사용자 자료 내용이 담길 수 있으므로 WARN 에는 길이와 종료 정보만 남긴다
+		assertThat(output.getOut()).contains("모델 출력 형식이 잘못되었습니다")
+				.contains("receivedLength=" + (12 + 120) + ", finishInfo=null")
+				.doesNotContain("햄버거 사진입니다")
+				.doesNotContain("head=");
+	}
+
+	@Test
+	@ExtendWith(OutputCaptureExtension.class)
+	void modelOutputHeadIsLoggedOnlyAtDebug(CapturedOutput output) throws Exception {
+		stubMalformedOutput();
+		Logger logger = (Logger)LoggerFactory.getLogger(AnalysisStreamService.class);
+		Level previous = logger.getLevel();
+		logger.setLevel(Level.DEBUG);
+		try {
+			streamLines(materialId);
+		} finally {
+			logger.setLevel(previous);
+		}
+
 		// 앞부분은 100자까지만, 줄바꿈은 \n·\r 로 표시한다
 		String head = "햄버거 사진입니다.\\r\\n" + "가".repeat(100 - "햄버거 사진입니다.\r\n".length());
-		assertThat(output.getOut()).contains("모델 출력 형식이 잘못되었습니다")
-				.contains("receivedLength=" + (12 + 120) + ", head=\"" + head + "\", finishInfo=null");
+		assertThat(output.getOut()).contains("DEBUG").contains("해설 스트림 모델 출력 앞부분")
+				.contains("head=\"" + head + "\"")
+				.contains("모델 출력 형식 오류 상세").contains("메타 줄이 JSON 이 아닙니다: 햄버거 사진입니다.");
+	}
+
+	@Test
+	void fileReadFailureSendsAiFailedInsteadOfDisconnectAndAllowsRetry() throws Exception {
+		doReturn(new AbstractResource() {
+			@Override
+			public String getDescription() {
+				return "읽을 수 없는 파일";
+			}
+
+			@Override
+			public InputStream getInputStream() throws IOException {
+				throw new IOException("디스크 읽기 오류");
+			}
+		}).when(fileStorage).load(any());
+
+		List<String> lines = streamLines(materialId);
+
+		// 출력 연결은 살아 있으므로 연결 끊김처럼 조용히 끝내지 않고 error 를 보낸다
+		Long analysisId = latestAnalysis(materialId).getId();
+		assertThat(lines).containsExactly(
+				"{\"type\":\"started\",\"analysisId\":" + analysisId + ",\"difficulty\":\"HARD\"}",
+				"{\"type\":\"progress\",\"stage\":\"ANALYZING\"}",
+				AI_FAILED_ERROR_LINE);
+		assertThat(latestAnalysis(materialId).getStatus()).isEqualTo(AnalysisStatus.FAILED);
+		verify(llmClient, never()).stream(any());
+
+		doAnswer(invocation -> invocation.callRealMethod()).when(fileStorage).load(any());
+		expectRetryCompletes(materialId, 2);
+	}
+
+	@Test
+	void failedStatusSaveFailureEndsWithoutError() throws Exception {
+		doReturn(new StubLlmStream(List.of(), new IllegalStateException("LLM 호출 실패"))).when(llmClient).stream(any());
+		doThrow(new IllegalStateException("DB 오류")).when(analysisService).fail(anyLong());
+
+		List<String> lines = streamLines(materialId);
+
+		// 저장하지 못한 상태(FAILED)를 error 로 알리지 않고, done·error 없이 끝낸다
+		assertThat(lines).hasSize(2);
+		assertThat(lines.getLast()).isEqualTo("{\"type\":\"progress\",\"stage\":\"ANALYZING\"}");
+		assertThat(lines).noneMatch(line -> line.contains("\"error\"") || line.contains("\"done\""));
+		// 상태가 PENDING 으로 남아 제한 시간 전에는 다시 시작할 수 없다 (error 를 보내면 안 되는 이유)
+		assertThat(latestAnalysis(materialId).getStatus()).isEqualTo(AnalysisStatus.PENDING);
+		expectError(materialId, ResultCode.ANALYSIS_IN_PROGRESS);
+	}
+
+	@Test
+	void unreadableStatusSaveFailureDoesNotClaimUnreadable() throws Exception {
+		doReturn(new StubLlmStream(List.of("{\"unreadable\":true}\n"), null)).when(llmClient).stream(any());
+		doThrow(new IllegalStateException("DB 오류")).when(analysisService).markUnreadable(anyLong());
+
+		List<String> lines = streamLines(materialId);
+
+		assertThat(lines).hasSize(2);
+		assertThat(lines).noneMatch(line -> line.contains("\"error\""));
+		// 정리 단계의 FAILED 저장은 성공하므로 같은 자료로 다시 요청할 수 있다
+		assertThat(latestAnalysis(materialId).getStatus()).isEqualTo(AnalysisStatus.FAILED);
+		expectRetryCompletes(materialId, 2);
+	}
+
+	private void stubMalformedOutput() {
+		// 첫 줄은 두 번째 조각의 줄바꿈에서 끝나므로, 형식 오류가 나기 전에 두 조각을 모두 받는다
+		doReturn(new StubLlmStream(List.of("햄버거 사진입니다.\r", "\n" + "가".repeat(120)), null))
+				.when(llmClient).stream(any());
 	}
 
 	@Test

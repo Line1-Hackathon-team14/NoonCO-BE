@@ -59,7 +59,9 @@ class GeminiLlmClientLiveTest {
 						env("GEMINI_TEMPERATURE").map(Float::valueOf).orElse(1.0f),
 						env("GEMINI_MAX_OUTPUT_TOKENS").map(Integer::valueOf).orElse(4096),
 						env("GEMINI_TIMEOUT").map(DurationStyle::detectAndParse).orElse(Duration.ofSeconds(120)),
-						env("GEMINI_RETRY_ATTEMPTS").map(Integer::valueOf).orElse(2)),
+						env("GEMINI_RETRY_ATTEMPTS").map(Integer::valueOf).orElse(2),
+						// 기본 모델 응답을 확인하는 테스트이므로 GEMINI_FALLBACK_MODEL 을 줬을 때만 폴백한다
+						env("GEMINI_FALLBACK_MODEL").orElse(null)),
 				new LlmProperties.Fake(Duration.ZERO)));
 	}
 

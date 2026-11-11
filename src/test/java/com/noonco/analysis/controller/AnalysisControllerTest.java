@@ -1,7 +1,7 @@
 package com.noonco.analysis.controller;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doReturn;
@@ -100,6 +100,10 @@ class AnalysisControllerTest {
 			2월 약 1,500명, 3월 약 1,900명, 4월 약 2,300명, 5월 약 2,800명으로 매달 늘어, 6개월 동안 약 2.8배가 되었습니다.
 			""";
 	private static final String FAKE_PDF_BODY = FAKE_SUMMARY + "\n";
+	private static final String UNREADABLE_ERROR_LINE = "{\"type\":\"error\",\"code\":\"UNREADABLE_IMAGE\","
+			+ "\"message\":\"사진을 읽지 못했어요. 다시 촬영해 주세요.\",\"status\":\"UNREADABLE\"}";
+	private static final String AI_FAILED_ERROR_LINE = "{\"type\":\"error\",\"code\":\"AI_FAILED\","
+			+ "\"message\":\"해설을 만들지 못했어요. 잠시 후 다시 시도해 주세요.\",\"status\":\"FAILED\"}";
 
 	@DynamicPropertySource
 	static void storageDir(DynamicPropertyRegistry registry) {
@@ -348,6 +352,10 @@ class AnalysisControllerTest {
 
 		List<String> lines = lines(failed.getResponse().getContentAsString(StandardCharsets.UTF_8));
 		assertThat(lines).noneMatch(line -> line.contains("\"done\""));
+		// HTTP 상태는 200 이고, error 가 마지막 줄이다
+		assertThat(failed.getResponse().getStatus()).isEqualTo(200);
+		assertThat(lines.getLast()).isEqualTo(AI_FAILED_ERROR_LINE);
+		assertThat(lines).filteredOn(line -> line.contains("\"error\"")).hasSize(1);
 		Analysis failedAnalysis = analysisRepository.findFirstByMaterialIdOrderByIdDesc(materialId).orElseThrow();
 		assertThat(failedAnalysis.getStatus()).isEqualTo(AnalysisStatus.FAILED);
 		assertThat(materialRepository.findById(materialId).orElseThrow().getTitle()).isNull();
@@ -371,7 +379,11 @@ class AnalysisControllerTest {
 
 		StreamingResponseBody body = analysisStreamService.stream(userId, materialId);
 		// meta 까지 보낸 뒤 첫 delta 에서 연결이 끊긴 상황
-		body.writeTo(new DisconnectingOutputStream(4));
+		DisconnectingOutputStream out = new DisconnectingOutputStream(4);
+		body.writeTo(out);
+
+		// 끊긴 연결에는 error 를 보내려 하지 않는다 (끊기기 전까지 쓴 줄에도 error·done 이 없다)
+		assertThat(out.buffer.toString(StandardCharsets.UTF_8)).doesNotContain("\"error\"").doesNotContain("\"done\"");
 
 		assertThat(opened.get()).isNotNull();
 		assertThat(opened.get().isClosed()).isTrue();
@@ -403,8 +415,10 @@ class AnalysisControllerTest {
 	void permitIsReleasedEvenWhenLlmStreamCloseThrows() throws Exception {
 		doReturn(closeFailingStream()).when(llmClient).stream(any());
 
-		assertThatThrownBy(() -> analysisStreamService.stream(userId, materialId).writeTo(new ByteArrayOutputStream()))
-				.isInstanceOf(IllegalStateException.class);
+		// 응답이 이미 커밋됐으므로 정리 중 예외도 밖으로 내보내지 않는다 (전역 JSON 예외 처리로 넘어가지 않음)
+		ByteArrayOutputStream out = new ByteArrayOutputStream();
+		assertThatCode(() -> analysisStreamService.stream(userId, materialId).writeTo(out)).doesNotThrowAnyException();
+		assertThat(lines(out.toString(StandardCharsets.UTF_8)).getLast()).isEqualTo(AI_FAILED_ERROR_LINE);
 
 		doAnswer(invocation -> invocation.callRealMethod()).when(llmClient).stream(any());
 		Long otherMaterialId = saveMaterial(userId);
@@ -420,6 +434,115 @@ class AnalysisControllerTest {
 		expectError(completedMaterialId, ResultCode.ANALYSIS_ALREADY_COMPLETED);
 
 		mockMvc.perform(asyncDispatch(startStream(materialId))).andExpect(status().isOk());
+	}
+
+	@Test
+	void unreadableImageSendsErrorSavesUnreadableAndAllowsRetry() throws Exception {
+		StubLlmStream unreadable = new StubLlmStream(List.of("{\"unreadable\":true}\n", "이후 텍스트는 쓰지 않는다"), null);
+		doReturn(unreadable).when(llmClient).stream(any());
+
+		MvcResult result = startStream(materialId);
+		mockMvc.perform(asyncDispatch(result)).andExpect(status().isOk());
+
+		List<String> lines = lines(result.getResponse().getContentAsString(StandardCharsets.UTF_8));
+		Long analysisId = latestAnalysis(materialId).getId();
+		assertThat(lines).containsExactly(
+				"{\"type\":\"started\",\"analysisId\":" + analysisId + ",\"difficulty\":\"HARD\"}",
+				"{\"type\":\"progress\",\"stage\":\"ANALYZING\"}",
+				UNREADABLE_ERROR_LINE);
+		assertThat(latestAnalysis(materialId).getStatus()).isEqualTo(AnalysisStatus.UNREADABLE);
+		// 판독 불가가 나오면 남은 출력을 받지 않고 LLM 스트림을 닫는다
+		assertThat(unreadable.isClosed()).isTrue();
+		assertThat(unreadable.fetched).isEqualTo(1);
+
+		expectRetryCompletes(materialId, 2);
+	}
+
+	@Test
+	void malformedModelOutputSendsAiFailed() throws Exception {
+		doReturn(new StubLlmStream(List.of("메타 JSON 이 아닌 첫 줄\n", "본문"), null)).when(llmClient).stream(any());
+
+		List<String> lines = streamLines(materialId);
+
+		assertThat(lines).hasSize(3);
+		assertThat(lines.getLast()).isEqualTo(AI_FAILED_ERROR_LINE);
+		assertThat(latestAnalysis(materialId).getStatus()).isEqualTo(AnalysisStatus.FAILED);
+		expectRetryCompletes(materialId, 2);
+	}
+
+	@Test
+	void outputEndingWithoutMetaSendsAiFailed() throws Exception {
+		doReturn(new StubLlmStream(List.of("\n", "  \n"), null)).when(llmClient).stream(any());
+
+		List<String> lines = streamLines(materialId);
+
+		assertThat(lines.getLast()).isEqualTo(AI_FAILED_ERROR_LINE);
+		assertThat(latestAnalysis(materialId).getStatus()).isEqualTo(AnalysisStatus.FAILED);
+	}
+
+	@Test
+	void llmCallFailureBeforeAnyChunkSendsAiFailed() throws Exception {
+		StubLlmStream failing = new StubLlmStream(List.of(), new IllegalStateException("429 RESOURCE_EXHAUSTED"));
+		doReturn(failing).when(llmClient).stream(any());
+
+		List<String> lines = streamLines(materialId);
+
+		assertThat(lines).hasSize(3);
+		assertThat(lines.getLast()).isEqualTo(AI_FAILED_ERROR_LINE);
+		assertThat(latestAnalysis(materialId).getStatus()).isEqualTo(AnalysisStatus.FAILED);
+		assertThat(failing.isClosed()).isTrue();
+		expectRetryCompletes(materialId, 2);
+	}
+
+	@Test
+	void savesModelThatActuallyResponded() throws Exception {
+		StubLlmStream fallback = new StubLlmStream(List.of("{\"visualType\":\"BAR\",\"title\":\"막대\"}\n", "본문"), null);
+		fallback.model = "gemini-3.5-flash-lite";
+		doReturn(fallback).when(llmClient).stream(any());
+
+		List<String> lines = streamLines(materialId);
+
+		assertThat(lines.getLast()).startsWith("{\"type\":\"done\"");
+		assertThat(latestAnalysis(materialId).getModel()).isEqualTo("gemini-3.5-flash-lite");
+	}
+
+	@Test
+	void supersededAnalysisSkipsSavingAndDone() throws Exception {
+		AtomicReference<Long> newerId = new AtomicReference<>();
+		doAnswer(invocation -> {
+			// 이 스트림이 해설을 만드는 동안 같은 자료에 더 새 요청이 시작된 상황 (제한 시간이 지난 PENDING 을 대체)
+			newerId.set(saveAnalysis(materialId));
+			return invocation.callRealMethod();
+		}).when(llmClient).stream(any());
+
+		MvcResult result = startStream(materialId);
+		mockMvc.perform(asyncDispatch(result)).andExpect(status().isOk());
+
+		List<String> lines = lines(result.getResponse().getContentAsString(StandardCharsets.UTF_8));
+		assertThat(lines).noneMatch(line -> line.contains("\"done\""));
+		assertThat(lines.getLast()).isEqualTo(AI_FAILED_ERROR_LINE);
+
+		Long supersededId = jsonMapper.readTree(lines.getFirst()).get("analysisId").longValue();
+		Analysis superseded = analysisRepository.findById(supersededId).orElseThrow();
+		assertThat(superseded.getStatus()).isEqualTo(AnalysisStatus.FAILED);
+		assertThat(superseded.getSummary()).isNull();
+		assertThat(superseded.getModel()).isNull();
+		assertThat(materialRepository.findById(materialId).orElseThrow().getTitle()).isNull();
+		assertThat(analysisRepository.findById(newerId.get()).orElseThrow().getStatus()).isEqualTo(AnalysisStatus.PENDING);
+	}
+
+	@Test
+	void completeSkipsSupersededAnalysis() {
+		Long olderId = saveAnalysis(materialId);
+		Long newerId = saveAnalysis(materialId);
+
+		boolean saved = analysisService.complete(olderId, materialId, VisualType.BAR, "제목", "본문", null, "fake", "v1");
+
+		assertThat(saved).isFalse();
+		assertThat(analysisRepository.findById(olderId).orElseThrow().getStatus()).isEqualTo(AnalysisStatus.PENDING);
+		assertThat(materialRepository.findById(materialId).orElseThrow().getTitle()).isNull();
+		assertThat(analysisService.complete(newerId, materialId, VisualType.BAR, "제목", "본문", null, "fake", "v1"))
+				.isTrue();
 	}
 
 	@Test
@@ -450,6 +573,27 @@ class AnalysisControllerTest {
 				.andExpect(jsonPath("$.resultCode").value(resultCode.name()))
 				.andExpect(jsonPath("$.msg").value(resultCode.getMessage()))
 				.andExpect(jsonPath("$.data").doesNotExist());
+	}
+
+	private List<String> streamLines(Long materialId) throws Exception {
+		MvcResult result = startStream(materialId);
+		mockMvc.perform(asyncDispatch(result)).andExpect(status().isOk());
+		return lines(result.getResponse().getContentAsString(StandardCharsets.UTF_8));
+	}
+
+	/**
+	 * 실패한 자료를 같은 자료로 다시 요청하면 새 analysis 로 완료된다.
+	 */
+	private void expectRetryCompletes(Long materialId, int expectedCount) throws Exception {
+		doAnswer(invocation -> invocation.callRealMethod()).when(llmClient).stream(any());
+		List<String> lines = streamLines(materialId);
+		assertThat(lines.getLast()).startsWith("{\"type\":\"done\"");
+		assertThat(latestAnalysis(materialId).getStatus()).isEqualTo(AnalysisStatus.COMPLETED);
+		assertThat(analysisCount(materialId)).isEqualTo(expectedCount);
+	}
+
+	private Analysis latestAnalysis(Long materialId) {
+		return analysisRepository.findFirstByMaterialIdOrderByIdDesc(materialId).orElseThrow();
 	}
 
 	private static String path(Long materialId) {
@@ -545,6 +689,11 @@ class AnalysisControllerTest {
 			}
 
 			@Override
+			public String model() {
+				return "stub";
+			}
+
+			@Override
 			public void close() {
 				closed = true;
 			}
@@ -567,10 +716,71 @@ class AnalysisControllerTest {
 			}
 
 			@Override
+			public String model() {
+				return "stub";
+			}
+
+			@Override
 			public void close() {
 				throw new IllegalStateException("close 실패");
 			}
 		};
+	}
+
+	/**
+	 * 정해 둔 조각을 내보낸 뒤, failure 가 있으면 그 예외를 던지는 스트림. close 이후에는 순회가 끝난다.
+	 */
+	private static final class StubLlmStream implements LlmStream {
+
+		private final List<String> chunks;
+		private final RuntimeException failure;
+		private volatile boolean closed;
+		private int fetched;
+		private String model = "stub";
+
+		StubLlmStream(List<String> chunks, RuntimeException failure) {
+			this.chunks = chunks;
+			this.failure = failure;
+		}
+
+		@Override
+		public Iterator<String> iterator() {
+			return new Iterator<>() {
+				@Override
+				public boolean hasNext() {
+					if (closed) {
+						return false;
+					}
+					if (fetched < chunks.size()) {
+						return true;
+					}
+					if (failure != null) {
+						throw failure;
+					}
+					return false;
+				}
+
+				@Override
+				public String next() {
+					return chunks.get(fetched++);
+				}
+			};
+		}
+
+		@Override
+		public boolean isClosed() {
+			return closed;
+		}
+
+		@Override
+		public String model() {
+			return model;
+		}
+
+		@Override
+		public void close() {
+			closed = true;
+		}
 	}
 
 	/**

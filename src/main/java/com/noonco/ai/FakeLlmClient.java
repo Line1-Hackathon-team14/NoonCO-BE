@@ -108,5 +108,10 @@ public class FakeLlmClient implements LlmClient {
 		protected void onClose() {
 			closeSignal.countDown();
 		}
+
+		@Override
+		public String model() {
+			return MODEL;
+		}
 	}
 }

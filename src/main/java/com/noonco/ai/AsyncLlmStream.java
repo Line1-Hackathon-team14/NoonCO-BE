@@ -17,10 +17,18 @@ import lombok.extern.slf4j.Slf4j;
  * 응답(R)을 기다리는 동안 close 하면 대기 중인 요청 스레드를 인터럽트하고(재시도 대기·소켓 읽기 중단),
  * 순회 중인 스레드도 곧바로 끝난다. close 이후 늦게 도착한 응답은 즉시 닫는다.
  *
- * @param <R> 조각을 읽어 낼 응답. close 로 연결을 끊을 수 있어야 한다.
+ * @param <R> 조각을 읽어 낼 응답. close 로 연결을 끊을 수 있어야 하고, 응답한 모델을 알려 준다.
  */
 @Slf4j
-final class AsyncLlmStream<R extends AutoCloseable> extends AbstractLlmStream {
+final class AsyncLlmStream<R extends AsyncLlmStream.ModelResponse> extends AbstractLlmStream {
+
+	/**
+	 * 요청 결과. 폴백으로 요청 모델이 바뀔 수 있어 응답이 실제 모델 이름을 들고 있다.
+	 */
+	interface ModelResponse extends AutoCloseable {
+
+		String model();
+	}
 
 	private final CompletableFuture<R> response = new CompletableFuture<>();
 	private final Function<R, Iterator<String>> reader;
@@ -53,6 +61,14 @@ final class AsyncLlmStream<R extends AutoCloseable> extends AbstractLlmStream {
 			chunks = reader.apply(awaitResponse());
 		}
 		return chunks.hasNext() ? chunks.next() : null;
+	}
+
+	@Override
+	public String model() {
+		if (!response.isDone() || response.isCompletedExceptionally()) {
+			return null;
+		}
+		return response.getNow(null).model();
 	}
 
 	@Override

@@ -23,6 +23,11 @@ public interface MaterialRepository extends JpaRepository<Material, Long> {
 	@Query("select m from Material m where m.id = :id and m.user.id = :userId")
 	Optional<Material> findByIdAndUserIdForUpdate(@Param("id") Long id, @Param("userId") Long userId);
 
+	// SELECT ... FOR UPDATE. 해설 완료를 같은 자료의 해설 시작과 직렬화할 때 쓴다
+	@Lock(LockModeType.PESSIMISTIC_WRITE)
+	@Query("select m from Material m where m.id = :id")
+	Optional<Material> findByIdForUpdate(@Param("id") Long id);
+
 	/**
 	 * COMPLETED 분석이 있는 자료만 최신순으로 조회한다.
 	 * 완료된 자료는 다시 분석할 수 없어 자료당 COMPLETED 분석은 1건뿐이므로 join 해도 중복되지 않는다.

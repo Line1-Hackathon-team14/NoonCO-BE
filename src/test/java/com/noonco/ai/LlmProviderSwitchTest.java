@@ -53,6 +53,7 @@ class LlmProviderSwitchTest {
 					LlmProperties.Gemini gemini = context.getBean(LlmProperties.class).gemini();
 					assertThat(gemini.timeout()).isEqualTo(Duration.ofSeconds(60));
 					assertThat(gemini.retryAttempts()).isEqualTo(2);
+					assertThat(gemini.fallbackModel()).isEqualTo("gemini-3.5-flash-lite");
 				});
 	}
 

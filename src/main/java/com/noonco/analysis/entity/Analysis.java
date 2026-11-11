@@ -82,6 +82,10 @@ public class Analysis extends BaseTimeEntity {
 		this.status = AnalysisStatus.FAILED;
 	}
 
+	public void markUnreadable() {
+		this.status = AnalysisStatus.UNREADABLE;
+	}
+
 	/**
 	 * 서버가 중간에 내려가 PENDING 으로 남은 분석은 제한 시간이 지나면 진행 중으로 보지 않는다.
 	 * 해설 시작과 자료 삭제가 같은 기준을 쓴다.

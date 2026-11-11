@@ -8,6 +8,12 @@ public interface LlmStream extends Iterable<String>, AutoCloseable {
 
 	boolean isClosed();
 
+	/**
+	 * 실제로 응답한 모델 이름. 예비 모델로 폴백했으면 예비 모델이다. analysis.model 에 저장한다.
+	 * 응답을 받기 전이거나 응답 없이 끝났으면 null 이다.
+	 */
+	String model();
+
 	@Override
 	void close();
 }

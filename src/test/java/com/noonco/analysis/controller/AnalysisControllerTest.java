@@ -1,6 +1,7 @@
 package com.noonco.analysis.controller;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doReturn;
@@ -75,7 +76,9 @@ import tools.jackson.databind.json.JsonMapper;
  * 로컬 DB 와 Fake LLM 으로 해설 스트림 전체 흐름을 확인한다.
  * 스트림은 다른 스레드에서 돌고 트랜잭션을 나눠 커밋하므로 테스트 트랜잭션 없이 실행하고, 만든 데이터는 끝나고 지운다.
  */
-@SpringBootTest(properties = { "llm.provider=fake", "llm.fake.chunk-delay=1ms", "llm.gemini.timeout=60s" })
+// 동시 실행 수를 1로 두어, 앞선 스트림이 자리를 반환하지 않으면 다음 요청이 AI_BUSY 로 실패하게 한다
+@SpringBootTest(properties = { "llm.provider=fake", "llm.fake.chunk-delay=1ms", "llm.gemini.timeout=60s",
+		"analysis.stream.max-concurrent=1" })
 @AutoConfigureMockMvc
 class AnalysisControllerTest {
 
@@ -358,8 +361,48 @@ class AnalysisControllerTest {
 		assertThat(analysisRepository.findFirstByMaterialIdOrderByIdDesc(materialId).orElseThrow().getStatus())
 				.isEqualTo(AnalysisStatus.FAILED);
 
-		assertThat(analysisService.start(userId, materialId)).isNotNull();
+		// 끊긴 스트림이 실행 자리를 반환했어야 다시 시작할 수 있다
+		analysisStreamService.stream(userId, materialId).writeTo(new ByteArrayOutputStream());
 		assertThat(analysisCount(materialId)).isEqualTo(2);
+	}
+
+	@Test
+	void requestOverLimitReturnsAiBusyWithoutCreatingAnalysis() throws Exception {
+		Long otherMaterialId = saveMaterial(userId);
+		StreamingResponseBody held = analysisStreamService.stream(userId, materialId);
+		try {
+			expectError(otherMaterialId, ResultCode.AI_BUSY);
+			assertThat(analysisCount(otherMaterialId)).isZero();
+		} finally {
+			held.writeTo(new ByteArrayOutputStream());
+		}
+
+		mockMvc.perform(asyncDispatch(startStream(otherMaterialId))).andExpect(status().isOk());
+		assertThat(analysisRepository.findFirstByMaterialIdOrderByIdDesc(otherMaterialId).orElseThrow().getStatus())
+				.isEqualTo(AnalysisStatus.COMPLETED);
+	}
+
+	@Test
+	void permitIsReleasedEvenWhenLlmStreamCloseThrows() throws Exception {
+		doReturn(closeFailingStream()).when(llmClient).stream(any());
+
+		assertThatThrownBy(() -> analysisStreamService.stream(userId, materialId).writeTo(new ByteArrayOutputStream()))
+				.isInstanceOf(IllegalStateException.class);
+
+		doAnswer(invocation -> invocation.callRealMethod()).when(llmClient).stream(any());
+		Long otherMaterialId = saveMaterial(userId);
+		mockMvc.perform(asyncDispatch(startStream(otherMaterialId))).andExpect(status().isOk());
+	}
+
+	@Test
+	void startErrorReleasesPermit() throws Exception {
+		Long completedMaterialId = saveMaterial(userId);
+		Long analysisId = saveAnalysis(completedMaterialId);
+		analysisService.complete(analysisId, completedMaterialId, VisualType.LINE, "제목", "본문", "fake", "v1");
+
+		expectError(completedMaterialId, ResultCode.ANALYSIS_ALREADY_COMPLETED);
+
+		mockMvc.perform(asyncDispatch(startStream(materialId))).andExpect(status().isOk());
 	}
 
 	@Test
@@ -487,6 +530,28 @@ class AnalysisControllerTest {
 			@Override
 			public void close() {
 				closed = true;
+			}
+		};
+	}
+
+	/**
+	 * 조각 없이 끝나고, close 에서 예외를 던지는 스트림.
+	 */
+	private static LlmStream closeFailingStream() {
+		return new LlmStream() {
+			@Override
+			public Iterator<String> iterator() {
+				return List.<String>of().iterator();
+			}
+
+			@Override
+			public boolean isClosed() {
+				return false;
+			}
+
+			@Override
+			public void close() {
+				throw new IllegalStateException("close 실패");
 			}
 		};
 	}

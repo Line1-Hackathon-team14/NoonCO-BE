@@ -35,6 +35,13 @@ public record AnalysisStreamEvent(String type, Long analysisId, Difficulty diffi
 		return new AnalysisStreamEvent("delta", null, null, null, null, null, text, null);
 	}
 
+	/**
+	 * 연결 유지·끊김 감지용. FE 는 무시한다.
+	 */
+	public static AnalysisStreamEvent ping() {
+		return new AnalysisStreamEvent("ping", null, null, null, null, null, null, null);
+	}
+
 	public static AnalysisStreamEvent done(Long analysisId) {
 		return new AnalysisStreamEvent("done", analysisId, null, null, null, null, null, AnalysisStatus.COMPLETED);
 	}

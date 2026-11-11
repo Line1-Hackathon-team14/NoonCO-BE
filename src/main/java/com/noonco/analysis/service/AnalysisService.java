@@ -69,11 +69,12 @@ public class AnalysisService {
 	}
 
 	/**
-	 * start 와 같은 material 행 잠금 아래에서, 이 analysis 가 그 자료의 최신 analysis 일 때만 완료한다.
+	 * start 와 같은 material 행 잠금 아래에서, 이 analysis 가 그 자료의 최신 analysis 이고 아직 PENDING 일 때만 완료한다.
 	 * 제한 시간이 지나 새 요청이 시작됐다면 이 analysis 는 대체된 것이므로 결과·제목을 저장하지 않는다.
+	 * 연결 끊김 감지 등으로 이미 FAILED 가 저장됐으면 COMPLETED 로 덮어쓰지 않는다(덮어쓰면 재요청이 막힌다).
 	 * 자료가 그 사이 삭제됐으면 제목은 저장하지 않는다. 상세 해설이 없으면 detail 은 null 이다.
 	 *
-	 * @return 완료했으면 true, 대체된 analysis 라 저장하지 않았으면 false
+	 * @return 완료했으면 true, 대체됐거나 이미 PENDING 이 아니라 저장하지 않았으면 false
 	 */
 	public boolean complete(Long analysisId, Long materialId, VisualType visualType, String title, String summary,
 			String detail, String model, String promptVersion) {
@@ -86,6 +87,9 @@ public class AnalysisService {
 			return false;
 		}
 		Analysis analysis = analysisRepository.findById(analysisId).orElseThrow();
+		if (analysis.getStatus() != AnalysisStatus.PENDING) {
+			return false;
+		}
 		analysis.complete(visualType, summary, detail, model, promptVersion);
 		material.ifPresent(m -> m.changeTitle(title));
 		return true;
@@ -93,8 +97,12 @@ public class AnalysisService {
 
 	/**
 	 * 아직 PENDING 인 경우에만 FAILED 로 바꾼다.
+	 * 연결 끊김을 감지한 watchdog 이 스트림 스레드의 complete 와 동시에 부를 수 있으므로, complete 와 같은 material 행 잠금을
+	 * 먼저 잡아 두 상태 변경을 직렬화한다. 잠금 순서는 start·complete 와 같다(material 행 → analysis 행).
+	 * 잠금 조회를 첫 조회로 해야 뒤의 analysis 조회가 다른 요청이 커밋한 상태를 본다 (start 와 같은 이유).
 	 */
-	public void fail(Long analysisId) {
+	public void fail(Long analysisId, Long materialId) {
+		materialRepository.findByIdForUpdate(materialId);
 		analysisRepository.findById(analysisId)
 				.filter(analysis -> analysis.getStatus() == AnalysisStatus.PENDING)
 				.ifPresent(Analysis::fail);

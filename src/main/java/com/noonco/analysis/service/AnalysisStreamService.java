@@ -7,6 +7,7 @@ import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
@@ -108,12 +109,13 @@ public class AnalysisStreamService {
 	 * 그래서 모든 예외를 여기서 처리하고 정상 반환한다.
 	 */
 	private void run(AnalysisStart start, OutputStream out) {
-		StreamWriter writer = new StreamWriter(out, System.nanoTime() + analysisTimeoutNanos);
+		StreamWriter writer = new StreamWriter(start.analysisId(), start.materialId(), out,
+				System.nanoTime() + analysisTimeoutNanos);
 		StreamState state = new StreamState();
 		try {
 			ResultCode failure = generate(start, writer, state);
 			if (failure != null) {
-				sendFailure(start.analysisId(), writer, failure);
+				sendFailure(start.analysisId(), start.materialId(), writer, failure);
 			}
 		} catch (IOException e) {
 			log.info("해설 스트림 연결이 끊겼습니다: analysisId={}, completed={}, cause={}", start.analysisId(),
@@ -133,18 +135,19 @@ public class AnalysisStreamService {
 				} else {
 					log.error("해설 생성 중 오류: analysisId={}, failure={}", start.analysisId(), failure, e);
 				}
-				sendFailure(start.analysisId(), writer, failure);
+				sendFailure(start.analysisId(), start.materialId(), writer, failure);
 			}
 		} finally {
-			// 정리 중 예외가 나도 실행 자리는 반드시 반환하고, 예외는 밖으로 내보내지 않는다
+			// 정리 중 예외가 나도 실행 자리는 반드시 반환하고, 예외는 밖으로 내보내지 않는다.
+			// LLM 스트림 close 는 SDK 잠금에 막힐 수 있으므로 자리를 반환한 뒤에 한다
 			try {
 				writer.close();
-				writer.closeLlmStream();
 				if (!state.completed) {
-					saveFailureQuietly(start.analysisId(), AnalysisStatus.FAILED);
+					saveFailureQuietly(start.analysisId(), start.materialId(), AnalysisStatus.FAILED);
 				}
 			} finally {
-				permits.release();
+				writer.releasePermit();
+				writer.closeLlmStream();
 			}
 		}
 	}
@@ -212,7 +215,7 @@ public class AnalysisStreamService {
 				state.meta.title(), state.summary.toString(), state.detail.isEmpty() ? null : state.detail.toString(),
 				llmStream.model(), start.prompt().version());
 		if (!saved) {
-			log.warn("같은 자료에 더 새 해설 요청이 있어 결과를 저장하지 않았습니다: analysisId={}, materialId={}",
+			log.warn("같은 자료에 더 새 해설 요청이 있거나 이미 실패로 저장돼 결과를 저장하지 않았습니다: analysisId={}, materialId={}",
 					start.analysisId(), start.materialId());
 			return ResultCode.AI_FAILED;
 		}
@@ -245,10 +248,10 @@ public class AnalysisStreamService {
 	 * error 의 status 는 저장된 상태라는 약속이므로, 저장에 실패하면 error 없이 끝낸다(클라이언트에는 중단된 스트림으로 보인다).
 	 * 그 경우 analysis 는 PENDING 으로 남을 수 있어, run 의 정리 단계에서 FAILED 저장을 한 번 더 시도한다.
 	 */
-	private void sendFailure(Long analysisId, StreamWriter writer, ResultCode failure) {
+	private void sendFailure(Long analysisId, Long materialId, StreamWriter writer, ResultCode failure) {
 		AnalysisStatus status = failure == ResultCode.UNREADABLE_IMAGE ? AnalysisStatus.UNREADABLE : AnalysisStatus.FAILED;
 		writer.closeLlmStream();
-		if (!saveFailureQuietly(analysisId, status)) {
+		if (!saveFailureQuietly(analysisId, materialId, status)) {
 			log.warn("실패 상태를 저장하지 못해 error 없이 해설 스트림을 끝냅니다: analysisId={}, failure={}", analysisId, failure);
 			return;
 		}
@@ -265,12 +268,12 @@ public class AnalysisStreamService {
 	 *
 	 * @return 저장 중 오류가 없었으면 true
 	 */
-	private boolean saveFailureQuietly(Long analysisId, AnalysisStatus status) {
+	private boolean saveFailureQuietly(Long analysisId, Long materialId, AnalysisStatus status) {
 		try {
 			if (status == AnalysisStatus.UNREADABLE) {
 				analysisService.markUnreadable(analysisId);
 			} else {
-				analysisService.fail(analysisId);
+				analysisService.fail(analysisId, materialId);
 			}
 			return true;
 		} catch (RuntimeException e) {
@@ -324,20 +327,37 @@ public class AnalysisStreamService {
 	 * 스트림마다 가상 스레드 하나(watchdog)가 ping 을 보내고 분석 제한 시간을 지킨다.
 	 * ping 전송이 실패하면 연결이 끊긴 것으로, 제한 시간이 지나면 시간 초과로 보고 LLM 스트림을 닫아 호출을 중단한다.
 	 * LLM 응답을 기다리는 동안에는 본문 쓰기가 없으므로, 이 단계의 연결 끊김은 ping 으로만 감지된다.
+	 * Gemini SDK 의 ResponseStream.close() 는 응답 읽기와 같은 잠금을 써서 SDK 제한 시간까지 막힐 수 있고,
+	 * 그동안 스트림 스레드도 읽기에서 풀려나지 않는다. 그래서 ping 으로 끊김을 감지하면 watchdog 이 FAILED 저장과
+	 * 실행 자리 반환을 먼저 하고 LLM 스트림을 닫는다. 실행 자리는 watchdog 과 스트림 스레드 중 먼저 온 쪽이 한 번만 반환한다.
 	 */
 	private final class StreamWriter {
 
+		private final Long analysisId;
+		private final Long materialId;
 		private final OutputStream out;
 		private final long deadline;
 		private final Object lock = new Object();
+		private final AtomicBoolean permitReleased = new AtomicBoolean();
 		private boolean closed;
 		private volatile boolean disconnected;
 		private volatile boolean timedOut;
 		private volatile LlmStream llmStream;
 
-		StreamWriter(OutputStream out, long deadline) {
+		StreamWriter(Long analysisId, Long materialId, OutputStream out, long deadline) {
+			this.analysisId = analysisId;
+			this.materialId = materialId;
 			this.out = out;
 			this.deadline = deadline;
+		}
+
+		/**
+		 * 여러 번 불려도 실행 자리는 한 번만 반환한다.
+		 */
+		void releasePermit() {
+			if (permitReleased.compareAndSet(false, true)) {
+				permits.release();
+			}
 		}
 
 		void write(AnalysisStreamEvent event) throws IOException {
@@ -444,6 +464,16 @@ public class AnalysisStreamService {
 						break;
 					}
 					nextPing += pingIntervalNanos;
+				}
+			}
+			if (disconnected) {
+				// 스트림 스레드는 LLM 응답 읽기에 막혀 있을 수 있으므로 기다리지 않는다.
+				// FAILED 를 먼저 저장해야 같은 자료를 다시 요청해도 진행 중(ANALYSIS_IN_PROGRESS)으로 막히지 않는다
+				log.info("ping 전송 실패로 연결 끊김을 감지해 실행 자리를 먼저 반환합니다: analysisId={}", analysisId);
+				try {
+					saveFailureQuietly(analysisId, materialId, AnalysisStatus.FAILED);
+				} finally {
+					releasePermit();
 				}
 			}
 			if (disconnected || timedOut) {

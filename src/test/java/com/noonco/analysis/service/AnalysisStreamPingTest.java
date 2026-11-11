@@ -1,6 +1,7 @@
 package com.noonco.analysis.service;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doReturn;
@@ -31,10 +32,13 @@ import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 import org.springframework.transaction.support.TransactionTemplate;
+import org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBody;
 
 import com.noonco.ai.LlmClient;
 import com.noonco.ai.LlmStream;
 import com.noonco.analysis.entity.AnalysisStatus;
+import com.noonco.global.ResultCode;
+import com.noonco.global.exception.BusinessException;
 import com.noonco.analysis.repository.AnalysisRepository;
 import com.noonco.material.entity.Material;
 import com.noonco.material.entity.SourceType;
@@ -155,6 +159,45 @@ class AnalysisStreamPingTest {
 		assertThat(latestStatus()).isEqualTo(AnalysisStatus.COMPLETED);
 	}
 
+	@Test
+	void disconnectReleasesPermitWithoutWaitingForBlockedLlmClose() throws Exception {
+		CloseBlockingLlmStream blocking = new CloseBlockingLlmStream();
+		doReturn(blocking).when(llmClient).stream(any());
+
+		CompletableFuture<Void> streaming = CompletableFuture.runAsync(() -> {
+			try {
+				analysisStreamService.stream(userId, materialId).writeTo(new DisconnectingOutputStream(2));
+			} catch (IOException e) {
+				throw new UncheckedIOException(e);
+			}
+		});
+
+		// watchdog 이 FAILED 저장·자리 반환을 마친 뒤 close 를 시작하고, close 는 막혀 있다
+		assertThat(blocking.closeStarted.await(5, TimeUnit.SECONDS)).isTrue();
+		assertThat(streaming).isNotDone();
+		assertThat(latestStatus()).isEqualTo(AnalysisStatus.FAILED);
+
+		try {
+			// close 가 끝나지 않았어도 같은 자료로 AI_BUSY·ANALYSIS_IN_PROGRESS 없이 다시 시작할 수 있다
+			doAnswer(invocation -> invocation.callRealMethod()).when(llmClient).stream(any());
+			analysisStreamService.stream(userId, materialId).writeTo(new ByteArrayOutputStream());
+			assertThat(latestStatus()).isEqualTo(AnalysisStatus.COMPLETED);
+			assertThat(streaming).isNotDone();
+		} finally {
+			blocking.unblockClose();
+		}
+		streaming.get(5, TimeUnit.SECONDS);
+
+		// 끊긴 스트림의 스레드가 정리 단계에서 자리를 한 번 더 반환하지 않았다: 자리는 여전히 1개다
+		StreamingResponseBody held = analysisStreamService.stream(userId, saveMaterial());
+		Long otherMaterialId = saveMaterial();
+		assertThatThrownBy(() -> analysisStreamService.stream(userId, otherMaterialId))
+				.isInstanceOfSatisfying(BusinessException.class,
+						e -> assertThat(e.getResultCode()).isEqualTo(ResultCode.AI_BUSY));
+		held.writeTo(new ByteArrayOutputStream());
+		analysisStreamService.stream(userId, otherMaterialId).writeTo(new ByteArrayOutputStream());
+	}
+
 	private AnalysisStatus latestStatus() {
 		return analysisRepository.findFirstByMaterialIdOrderByIdDesc(materialId).orElseThrow().getStatus();
 	}
@@ -229,6 +272,62 @@ class AnalysisStreamPingTest {
 
 		@Override
 		public void close() {
+			closed.countDown();
+		}
+	}
+
+	/**
+	 * Gemini SDK 처럼 close 가 응답 읽기와 같은 잠금에 막히는 LLM 스트림.
+	 * close 는 unblockClose 전까지 끝나지 않고, 순회 중인 스레드도 close 가 끝나야 풀려난다.
+	 */
+	private static final class CloseBlockingLlmStream implements LlmStream {
+
+		private final CountDownLatch closeStarted = new CountDownLatch(1);
+		private final CountDownLatch closeAllowed = new CountDownLatch(1);
+		private final CountDownLatch closed = new CountDownLatch(1);
+
+		void unblockClose() {
+			closeAllowed.countDown();
+		}
+
+		@Override
+		public Iterator<String> iterator() {
+			return new Iterator<>() {
+				@Override
+				public boolean hasNext() {
+					try {
+						closed.await();
+					} catch (InterruptedException e) {
+						Thread.currentThread().interrupt();
+					}
+					return false;
+				}
+
+				@Override
+				public String next() {
+					throw new NoSuchElementException();
+				}
+			};
+		}
+
+		@Override
+		public boolean isClosed() {
+			return closed.getCount() == 0;
+		}
+
+		@Override
+		public String model() {
+			return "stub";
+		}
+
+		@Override
+		public void close() {
+			closeStarted.countDown();
+			try {
+				closeAllowed.await();
+			} catch (InterruptedException e) {
+				Thread.currentThread().interrupt();
+			}
 			closed.countDown();
 		}
 	}

@@ -34,6 +34,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Stream;
 
@@ -671,7 +672,7 @@ class AnalysisControllerTest {
 	@Test
 	void failedStatusSaveFailureEndsWithoutError() throws Exception {
 		doReturn(new StubLlmStream(List.of(), new IllegalStateException("LLM 호출 실패"))).when(llmClient).stream(any());
-		doThrow(new IllegalStateException("DB 오류")).when(analysisService).fail(anyLong());
+		doThrow(new IllegalStateException("DB 오류")).when(analysisService).fail(anyLong(), anyLong());
 
 		List<String> lines = streamLines(materialId);
 
@@ -767,6 +768,76 @@ class AnalysisControllerTest {
 		assertThat(materialRepository.findById(materialId).orElseThrow().getTitle()).isNull();
 		assertThat(analysisService.complete(newerId, materialId, VisualType.BAR, "제목", "본문", null, "fake", "v1"))
 				.isTrue();
+	}
+
+	@Test
+	void completeDoesNotOverwriteFailedAnalysis() throws Exception {
+		Long analysisId = saveAnalysis(materialId);
+		analysisService.fail(analysisId, materialId);
+
+		boolean saved = analysisService.complete(analysisId, materialId, VisualType.BAR, "제목", "본문", null, "fake", "v1");
+
+		// 대체된 analysis 와 같이 저장하지 않으므로 FAILED 가 유지되고 같은 자료로 다시 요청할 수 있다
+		assertThat(saved).isFalse();
+		Analysis failed = analysisRepository.findById(analysisId).orElseThrow();
+		assertThat(failed.getStatus()).isEqualTo(AnalysisStatus.FAILED);
+		assertThat(failed.getSummary()).isNull();
+		assertThat(materialRepository.findById(materialId).orElseThrow().getTitle()).isNull();
+		expectRetryCompletes(materialId, 2);
+	}
+
+	@Test
+	void failedSavedByWatchdogBeforeCompleteIsKeptAndRetryable() throws Exception {
+		// 스트림 스레드가 연결 검사를 통과한 직후 watchdog 이 연결 끊김을 감지해 FAILED 를 저장한 상황을 흉내 낸다
+		doAnswer(invocation -> {
+			analysisService.fail(invocation.getArgument(0), invocation.getArgument(1));
+			return invocation.callRealMethod();
+		}).doCallRealMethod().when(analysisService)
+				.complete(anyLong(), anyLong(), any(), any(), any(), any(), any(), any());
+
+		List<String> lines = streamLines(materialId);
+
+		assertThat(lines.getLast()).isEqualTo(AI_FAILED_ERROR_LINE);
+		assertThat(lines).noneMatch(line -> line.startsWith("{\"type\":\"done\""));
+		Analysis failed = latestAnalysis(materialId);
+		assertThat(failed.getStatus()).isEqualTo(AnalysisStatus.FAILED);
+		assertThat(failed.getSummary()).isNull();
+		assertThat(materialRepository.findById(materialId).orElseThrow().getTitle()).isNull();
+		expectRetryCompletes(materialId, 2);
+	}
+
+	/**
+	 * fail 과 complete 가 같은 material 행 잠금으로 직렬화되므로, 동시에 불려도 교착 없이 끝나고
+	 * 둘 중 먼저 잠금을 잡은 쪽의 결과만 남는다 (complete 가 true 면 COMPLETED, false 면 FAILED).
+	 */
+	@Test
+	void concurrentFailAndCompleteAreSerializedWithoutDeadlock() throws Exception {
+		try (ExecutorService executor = Executors.newFixedThreadPool(2)) {
+			for (int round = 0; round < 20; round++) {
+				Long analysisId = saveAnalysis(materialId);
+				CountDownLatch ready = new CountDownLatch(2);
+				CountDownLatch go = new CountDownLatch(1);
+				Future<Boolean> completing = executor.submit(() -> {
+					ready.countDown();
+					go.await();
+					return analysisService.complete(analysisId, materialId, VisualType.BAR, "제목", "본문", null, "fake",
+							"v1");
+				});
+				Future<?> failing = executor.submit(() -> {
+					ready.countDown();
+					go.await();
+					analysisService.fail(analysisId, materialId);
+					return null;
+				});
+				ready.await();
+				go.countDown();
+
+				boolean completed = completing.get(10, TimeUnit.SECONDS);
+				failing.get(10, TimeUnit.SECONDS);
+				assertThat(analysisRepository.findById(analysisId).orElseThrow().getStatus())
+						.isEqualTo(completed ? AnalysisStatus.COMPLETED : AnalysisStatus.FAILED);
+			}
+		}
 	}
 
 	@Test

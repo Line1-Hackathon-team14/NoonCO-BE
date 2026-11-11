@@ -46,24 +46,32 @@ class MaterialUploadSizeTest {
 
 	@Test
 	void imageOver5MbReturnsFileTooLarge() throws Exception {
-		HttpResponse<String> response = uploadPng(5 * MB + 1);
+		assertFileTooLarge(upload("images", "chart.png", "image/png", 5 * MB + 1));
+	}
 
+	@Test
+	void pdfOver5MbReturnsFileTooLarge() throws Exception {
+		assertFileTooLarge(upload("pdfs", "lecture.pdf", "application/pdf", 5 * MB + 1));
+	}
+
+	private static void assertFileTooLarge(HttpResponse<String> response) {
 		assertThat(response.statusCode()).isEqualTo(413);
 		assertThat((String) JsonPath.read(response.body(), "$.resultCode")).isEqualTo("FILE_TOO_LARGE");
 		assertThat((String) JsonPath.read(response.body(), "$.msg")).isEqualTo(ResultCode.FILE_TOO_LARGE.getMessage());
 		assertThat((Object) JsonPath.read(response.body(), "$.data")).isNull();
 	}
 
-	private HttpResponse<String> uploadPng(int fileSize) throws Exception {
+	private HttpResponse<String> upload(String path, String filename, String contentType, int fileSize)
+			throws Exception {
 		String boundary = "noonco-test-boundary";
 		ByteArrayOutputStream body = new ByteArrayOutputStream();
 		body.write(("--" + boundary + "\r\n"
-				+ "Content-Disposition: form-data; name=\"file\"; filename=\"chart.png\"\r\n"
-				+ "Content-Type: image/png\r\n\r\n").getBytes(StandardCharsets.UTF_8));
+				+ "Content-Disposition: form-data; name=\"file\"; filename=\"" + filename + "\"\r\n"
+				+ "Content-Type: " + contentType + "\r\n\r\n").getBytes(StandardCharsets.UTF_8));
 		body.write(new byte[fileSize]);
 		body.write(("\r\n--" + boundary + "--\r\n").getBytes(StandardCharsets.UTF_8));
 
-		HttpRequest request = HttpRequest.newBuilder(URI.create("http://localhost:" + port + "/api/v1/materials/images"))
+		HttpRequest request = HttpRequest.newBuilder(URI.create("http://localhost:" + port + "/api/v1/materials/" + path))
 				.header(HttpHeaders.CONTENT_TYPE, "multipart/form-data; boundary=" + boundary)
 				.header(HttpHeaders.AUTHORIZATION, "Bearer " + jwtTokenProvider.createAccessToken(1L))
 				.POST(HttpRequest.BodyPublishers.ofByteArray(body.toByteArray()))

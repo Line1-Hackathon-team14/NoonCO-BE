@@ -3,6 +3,7 @@ package com.noonco.material.service;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.file.Files;
@@ -11,6 +12,10 @@ import java.util.List;
 import java.util.UUID;
 import java.util.stream.Stream;
 
+import org.apache.pdfbox.pdmodel.PDDocument;
+import org.apache.pdfbox.pdmodel.PDPage;
+import org.apache.pdfbox.pdmodel.encryption.AccessPermission;
+import org.apache.pdfbox.pdmodel.encryption.StandardProtectionPolicy;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -108,6 +113,59 @@ class MaterialServiceTest {
 	}
 
 	@Test
+	void uploadPdfStoresFileAndPageCount() throws IOException {
+		byte[] bytes = pdf(30);
+		MaterialUploadResponse response = materialService.uploadPdf(userId, pdfFile("lecture.pdf", bytes));
+		flushAndClear();
+
+		assertThat(response.sourceType()).isEqualTo(SourceType.PDF);
+		assertThat(response.title()).isNull();
+		assertThat(response.pageCount()).isEqualTo(30);
+		assertThat(response.fileSize()).isEqualTo(bytes.length);
+
+		Material found = materialRepository.findById(response.materialId()).orElseThrow();
+		assertThat(found.getSourceType()).isEqualTo(SourceType.PDF);
+		assertThat(found.getOriginalFilename()).isEqualTo("lecture.pdf");
+		assertThat(found.getMimeType()).isEqualTo("application/pdf");
+		assertThat(found.getPageCount()).isEqualTo(30);
+		assertThat(STORAGE_DIR.resolve(found.getFilePath())).isRegularFile().hasBinaryContent(bytes);
+	}
+
+	@Test
+	void pdfOver30PagesIsRejectedWithoutStoring() throws IOException {
+		assertPdfRejected(pdf(31), ResultCode.PDF_TOO_MANY_PAGES);
+	}
+
+	@Test
+	void encryptedPdfIsRejectedWithoutStoring() throws IOException {
+		assertPdfRejected(encryptedPdf(), ResultCode.PDF_UNREADABLE);
+	}
+
+	@Test
+	void corruptedPdfIsRejectedWithoutStoring() {
+		assertPdfRejected("%PDF-1.7\nbroken".getBytes(), ResultCode.PDF_UNREADABLE);
+	}
+
+	@Test
+	void imageIsRejectedByPdfUpload() {
+		List<Path> before = storedFiles();
+
+		assertThatThrownBy(() -> materialService.uploadPdf(userId, png("chart.png")))
+				.extracting("resultCode").isEqualTo(ResultCode.INVALID_FILE_TYPE);
+		assertThat(storedFiles()).isEqualTo(before);
+	}
+
+	private void assertPdfRejected(byte[] bytes, ResultCode expected) {
+		List<Path> before = storedFiles();
+		long countBefore = materialRepository.count();
+
+		assertThatThrownBy(() -> materialService.uploadPdf(userId, pdfFile("lecture.pdf", bytes)))
+				.extracting("resultCode").isEqualTo(expected);
+		assertThat(storedFiles()).isEqualTo(before);
+		assertThat(materialRepository.count()).isEqualTo(countBefore);
+	}
+
+	@Test
 	void storedFileIsDeletedWhenTransactionDoesNotCommit() {
 		List<Path> before = storedFiles();
 		// 없는 사용자를 참조해 INSERT 가 외래 키 제약으로 실패하게 만든다
@@ -155,6 +213,36 @@ class MaterialServiceTest {
 
 	private static MockMultipartFile png(String filename) {
 		return new MockMultipartFile("file", filename, "image/png", PNG_BYTES);
+	}
+
+	private static MockMultipartFile pdfFile(String filename, byte[] bytes) {
+		return new MockMultipartFile("file", filename, "application/pdf", bytes);
+	}
+
+	private static byte[] pdf(int pages) throws IOException {
+		try (PDDocument document = new PDDocument()) {
+			for (int i = 0; i < pages; i++) {
+				document.addPage(new PDPage());
+			}
+			return save(document);
+		}
+	}
+
+	// 열람 암호(user password)가 걸린 PDF
+	private static byte[] encryptedPdf() throws IOException {
+		try (PDDocument document = new PDDocument()) {
+			document.addPage(new PDPage());
+			StandardProtectionPolicy policy = new StandardProtectionPolicy("owner", "user", new AccessPermission());
+			policy.setEncryptionKeyLength(128);
+			document.protect(policy);
+			return save(document);
+		}
+	}
+
+	private static byte[] save(PDDocument document) throws IOException {
+		ByteArrayOutputStream out = new ByteArrayOutputStream();
+		document.save(out);
+		return out.toByteArray();
 	}
 
 	private void flushAndClear() {

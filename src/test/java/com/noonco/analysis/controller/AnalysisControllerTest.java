@@ -87,14 +87,19 @@ class AnalysisControllerTest {
 	private static final String STORED_KEY = UUID.randomUUID() + ".png";
 	private static final byte[] PDF_BYTES = "%PDF-1.7\n".getBytes(StandardCharsets.US_ASCII);
 	private static final String STORED_PDF_KEY = UUID.randomUUID() + ".pdf";
-	// FakeLlmClient 응답에서 첫 줄 메타 JSON 과 그 뒤 줄바꿈을 뺀 본문
+	// FakeLlmClient 응답에서 첫 줄 메타 JSON 과 그 뒤 줄바꿈을 뺀 본문. 이미지는 구분선 줄과 그 앞뒤 줄바꿈도 뺀다
 	private static final String FAKE_TITLE = "월별 방문자 수 추이";
 	private static final String FAKE_PDF_TITLE = "월별 방문자 수 보고서";
-	private static final String FAKE_BODY = """
+	private static final String FAKE_SUMMARY = """
 			이 자료는 1월부터 6월까지의 월별 방문자 수를 나타낸 꺾은선 그래프입니다.
 			가로축은 월, 세로축은 방문자 수이며, 전체적으로 꾸준히 증가하는 흐름을 보입니다.
-			가장 낮은 달은 1월로 약 1,200명이고, 가장 높은 달은 6월로 약 3,400명입니다.
+			가장 낮은 달은 1월로 약 1,200명이고, 가장 높은 달은 6월로 약 3,400명입니다.""";
+	private static final String FAKE_DETAIL = """
+			가로축은 1월부터 6월까지 한 달 간격이고, 세로축은 방문자 수(명)로 0명부터 4,000명까지 1,000명 간격의 눈금이 있습니다.
+			최솟값은 1월의 약 1,200명, 최댓값은 6월의 약 3,400명입니다.
+			2월 약 1,500명, 3월 약 1,900명, 4월 약 2,300명, 5월 약 2,800명으로 매달 늘어, 6개월 동안 약 2.8배가 되었습니다.
 			""";
+	private static final String FAKE_PDF_BODY = FAKE_SUMMARY + "\n";
 
 	@DynamicPropertySource
 	static void storageDir(DynamicPropertyRegistry registry) {
@@ -165,17 +170,27 @@ class AnalysisControllerTest {
 
 		List<String> deltaLines = lines.subList(4, lines.size() - 1);
 		assertThat(deltaLines).hasSizeGreaterThan(1);
-		StringBuilder body = new StringBuilder();
+		StringBuilder summary = new StringBuilder();
+		StringBuilder detail = new StringBuilder();
 		for (String line : deltaLines) {
 			JsonNode node = jsonMapper.readTree(line);
-			assertThat(node.propertyNames()).containsExactly("type", "text");
+			assertThat(node.propertyNames()).containsExactly("type", "section", "text");
 			assertThat(node.get("type").stringValue()).isEqualTo("delta");
-			body.append(node.get("text").stringValue());
+			if (node.get("section").stringValue().equals("SUMMARY")) {
+				assertThat(detail).as("요약 delta 가 모두 나간 뒤 상세 delta 가 나가야 한다").isEmpty();
+				summary.append(node.get("text").stringValue());
+			} else {
+				assertThat(node.get("section").stringValue()).isEqualTo("DETAIL");
+				detail.append(node.get("text").stringValue());
+			}
 		}
-		assertThat(body.toString()).isEqualTo(FAKE_BODY);
+		assertThat(summary.toString()).isEqualTo(FAKE_SUMMARY);
+		assertThat(detail.toString()).isEqualTo(FAKE_DETAIL);
 
+		// 전송한 요약·상세와 저장한 값이 같아야 한다
 		assertThat(analysis.getStatus()).isEqualTo(AnalysisStatus.COMPLETED);
-		assertThat(analysis.getSummary()).isEqualTo(FAKE_BODY);
+		assertThat(analysis.getSummary()).isEqualTo(summary.toString());
+		assertThat(analysis.getDetail()).isEqualTo(detail.toString());
 		assertThat(analysis.getVisualType()).isEqualTo(VisualType.LINE);
 		assertThat(analysis.getModel()).isEqualTo("fake");
 		assertThat(analysis.getPromptVersion()).isEqualTo(promptLoader.get(SourceType.IMAGE, Difficulty.HARD).version());
@@ -205,18 +220,20 @@ class AnalysisControllerTest {
 		assertThat(deltaLines).isNotEmpty();
 		StringBuilder body = new StringBuilder();
 		for (String line : deltaLines) {
-			JsonNode node = jsonMapper.readTree(line);
-			assertThat(node.propertyNames()).containsExactly("type", "text");
-			assertThat(node.get("type").stringValue()).isEqualTo("delta");
-			body.append(node.get("text").stringValue());
+			assertThat(line).startsWith("{\"type\":\"delta\",\"section\":\"SUMMARY\",\"text\":");
+			body.append(jsonMapper.readTree(line).get("text").stringValue());
 		}
-		assertThat(body.toString()).isEqualTo(FAKE_BODY);
+		assertThat(body.toString()).isEqualTo(FAKE_PDF_BODY);
 
 		assertThat(analysis.getStatus()).isEqualTo(AnalysisStatus.COMPLETED);
 		assertThat(analysis.getVisualType()).isNull();
 		assertThat(jdbcTemplate.queryForObject("select visual_type from analysis where id = ?", String.class, analysisId))
 				.isNull();
-		assertThat(analysis.getSummary()).isEqualTo(FAKE_BODY);
+		assertThat(analysis.getSummary()).isEqualTo(FAKE_PDF_BODY);
+		// 상세 구간이 없으면 detail 은 NULL 로 저장한다
+		assertThat(analysis.getDetail()).isNull();
+		assertThat(jdbcTemplate.queryForObject("select detail from analysis where id = ?", String.class, analysisId))
+				.isNull();
 		assertThat(analysis.getPromptVersion()).isEqualTo(promptLoader.get(SourceType.PDF, Difficulty.HARD).version());
 		assertThat(materialRepository.findById(pdfMaterialId).orElseThrow().getTitle()).isEqualTo(FAKE_PDF_TITLE);
 	}
@@ -241,7 +258,7 @@ class AnalysisControllerTest {
 	@Test
 	void completedMaterialReturnsAlreadyCompleted() throws Exception {
 		Long analysisId = saveAnalysis(materialId);
-		analysisService.complete(analysisId, materialId, VisualType.LINE, "제목", "본문", "fake", "v1");
+		analysisService.complete(analysisId, materialId, VisualType.LINE, "제목", "본문", null, "fake", "v1");
 
 		expectError(materialId, ResultCode.ANALYSIS_ALREADY_COMPLETED);
 		assertThat(analysisCount(materialId)).isEqualTo(1);
@@ -398,7 +415,7 @@ class AnalysisControllerTest {
 	void startErrorReleasesPermit() throws Exception {
 		Long completedMaterialId = saveMaterial(userId);
 		Long analysisId = saveAnalysis(completedMaterialId);
-		analysisService.complete(analysisId, completedMaterialId, VisualType.LINE, "제목", "본문", "fake", "v1");
+		analysisService.complete(analysisId, completedMaterialId, VisualType.LINE, "제목", "본문", null, "fake", "v1");
 
 		expectError(completedMaterialId, ResultCode.ANALYSIS_ALREADY_COMPLETED);
 
@@ -411,7 +428,7 @@ class AnalysisControllerTest {
 		// 이모지(서로게이트 쌍)가 100번째 문자에 걸려도 쪼개지지 않아야 한다
 		String title = "가".repeat(99) + "😀" + "나".repeat(10);
 
-		analysisService.complete(analysisId, materialId, VisualType.BAR, title, "본문", "fake", "v1");
+		analysisService.complete(analysisId, materialId, VisualType.BAR, title, "본문", null, "fake", "v1");
 
 		String saved = materialRepository.findById(materialId).orElseThrow().getTitle();
 		assertThat(saved).isEqualTo("가".repeat(99) + "😀");

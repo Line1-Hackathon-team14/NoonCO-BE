@@ -20,8 +20,16 @@ public sealed interface LlmOutputEvent {
 	}
 
 	/**
-	 * 해설 본문 조각. 메타 줄과 그 뒤 줄바꿈은 포함하지 않는다.
+	 * 해설 본문 조각. 메타 줄과 그 뒤 줄바꿈, 구분선 줄과 그 앞뒤 줄바꿈은 포함하지 않는다.
+	 * 요약 조각이 모두 나온 뒤에 상세 조각이 나온다.
 	 */
-	record Delta(String text) implements LlmOutputEvent {
+	record Delta(Section section, String text) implements LlmOutputEvent {
+	}
+
+	/**
+	 * 본문 구간. 구분선 앞은 요약, 뒤는 축·수치 상세 해설이다.
+	 */
+	enum Section {
+		SUMMARY, DETAIL
 	}
 }

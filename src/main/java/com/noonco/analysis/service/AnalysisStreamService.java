@@ -43,6 +43,7 @@ public class AnalysisStreamService {
 	private final JsonMapper jsonMapper;
 	private final Semaphore permits;
 	private final long pingIntervalNanos;
+	private final int summaryMaxLength;
 
 	public AnalysisStreamService(AnalysisService analysisService, LlmClient llmClient, FileStorage fileStorage,
 			JsonMapper jsonMapper, AnalysisStreamProperties properties) {
@@ -52,6 +53,7 @@ public class AnalysisStreamService {
 		this.jsonMapper = jsonMapper;
 		this.permits = new Semaphore(properties.maxConcurrent());
 		this.pingIntervalNanos = properties.pingInterval().toNanos();
+		this.summaryMaxLength = properties.summaryMaxLength();
 	}
 
 	/**
@@ -91,7 +93,7 @@ public class AnalysisStreamService {
 			writer.attach(llmStream);
 
 			StreamState state = new StreamState();
-			LlmOutputParser parser = new LlmOutputParser(start.sourceType());
+			LlmOutputParser parser = new LlmOutputParser(start.sourceType(), summaryMaxLength);
 			for (String chunk : llmStream) {
 				handle(writer, parser.feed(chunk), state);
 			}
@@ -110,7 +112,8 @@ public class AnalysisStreamService {
 				return;
 			}
 			analysisService.complete(start.analysisId(), start.materialId(), state.meta.visualType(),
-					state.meta.title(), state.summary.toString(), llmClient.model(), start.prompt().version());
+					state.meta.title(), state.summary.toString(), state.detail.isEmpty() ? null : state.detail.toString(),
+					llmClient.model(), start.prompt().version());
 			completed = true;
 			writer.write(AnalysisStreamEvent.done(start.analysisId()));
 		} catch (IOException e) {
@@ -143,8 +146,9 @@ public class AnalysisStreamService {
 					writer.write(AnalysisStreamEvent.progress(AnalysisStreamEvent.STAGE_GENERATING));
 				}
 				case LlmOutputEvent.Delta delta -> {
-					state.summary.append(delta.text());
-					writer.write(AnalysisStreamEvent.delta(delta.text()));
+					// 보낸 텍스트를 그대로 모아 저장하므로 전송한 해설과 저장한 해설이 같다
+					(delta.section() == LlmOutputEvent.Section.SUMMARY ? state.summary : state.detail).append(delta.text());
+					writer.write(AnalysisStreamEvent.delta(delta.section().name(), delta.text()));
 				}
 				case LlmOutputEvent.Unreadable unreadable -> {
 					// #20 에서 처리한다. 지금은 완료하지 않고 끝내 FAILED 로 남긴다
@@ -165,6 +169,7 @@ public class AnalysisStreamService {
 
 		private LlmOutputEvent.Meta meta;
 		private final StringBuilder summary = new StringBuilder();
+		private final StringBuilder detail = new StringBuilder();
 	}
 
 	/**

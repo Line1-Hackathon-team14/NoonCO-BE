@@ -127,7 +127,7 @@ class AnalysisStreamPingTest {
 		assertThat(lines).contains(PING_LINE);
 		assertThat(types).containsExactly("started", "progress", "meta", "progress", "delta", "done");
 		assertThat(lines.getLast()).startsWith("{\"type\":\"done\"");
-		assertThat(body.toString()).startsWith("이 자료는").endsWith("3,400명입니다.\n");
+		assertThat(body.toString()).startsWith("이 자료는").endsWith("약 2.8배가 되었습니다.\n");
 		assertThat(latestStatus()).isEqualTo(AnalysisStatus.COMPLETED);
 	}
 

@@ -68,12 +68,12 @@ public class AnalysisService {
 	}
 
 	/**
-	 * 자료가 그 사이 삭제됐으면 제목은 저장하지 않는다.
+	 * 자료가 그 사이 삭제됐으면 제목은 저장하지 않는다. 상세 해설이 없으면 detail 은 null 이다.
 	 */
 	public void complete(Long analysisId, Long materialId, VisualType visualType, String title, String summary,
-			String model, String promptVersion) {
+			String detail, String model, String promptVersion) {
 		Analysis analysis = analysisRepository.findById(analysisId).orElseThrow();
-		analysis.complete(visualType, summary, model, promptVersion);
+		analysis.complete(visualType, summary, detail, model, promptVersion);
 		materialRepository.findById(materialId).ifPresent(material -> material.changeTitle(title));
 	}
 

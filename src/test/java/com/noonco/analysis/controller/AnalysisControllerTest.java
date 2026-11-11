@@ -1,6 +1,7 @@
 package com.noonco.analysis.controller;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doReturn;
@@ -382,6 +383,18 @@ class AnalysisControllerTest {
 	}
 
 	@Test
+	void permitIsReleasedEvenWhenLlmStreamCloseThrows() throws Exception {
+		doReturn(closeFailingStream()).when(llmClient).stream(any());
+
+		assertThatThrownBy(() -> analysisStreamService.stream(userId, materialId).writeTo(new ByteArrayOutputStream()))
+				.isInstanceOf(IllegalStateException.class);
+
+		doAnswer(invocation -> invocation.callRealMethod()).when(llmClient).stream(any());
+		Long otherMaterialId = saveMaterial(userId);
+		mockMvc.perform(asyncDispatch(startStream(otherMaterialId))).andExpect(status().isOk());
+	}
+
+	@Test
 	void startErrorReleasesPermit() throws Exception {
 		Long completedMaterialId = saveMaterial(userId);
 		Long analysisId = saveAnalysis(completedMaterialId);
@@ -517,6 +530,28 @@ class AnalysisControllerTest {
 			@Override
 			public void close() {
 				closed = true;
+			}
+		};
+	}
+
+	/**
+	 * 조각 없이 끝나고, close 에서 예외를 던지는 스트림.
+	 */
+	private static LlmStream closeFailingStream() {
+		return new LlmStream() {
+			@Override
+			public Iterator<String> iterator() {
+				return List.<String>of().iterator();
+			}
+
+			@Override
+			public boolean isClosed() {
+				return false;
+			}
+
+			@Override
+			public void close() {
+				throw new IllegalStateException("close 실패");
 			}
 		};
 	}

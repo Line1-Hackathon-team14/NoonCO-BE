@@ -119,14 +119,18 @@ public class AnalysisStreamService {
 		} catch (RuntimeException e) {
 			log.error("해설 스트림 처리 중 오류: analysisId={}", start.analysisId(), e);
 		} finally {
-			writer.close();
-			if (llmStream != null) {
-				llmStream.close();
+			// 정리 중 예외가 나도 실행 자리는 반드시 반환한다
+			try {
+				writer.close();
+				if (llmStream != null) {
+					llmStream.close();
+				}
+				if (!completed) {
+					failQuietly(start.analysisId());
+				}
+			} finally {
+				permits.release();
 			}
-			if (!completed) {
-				failQuietly(start.analysisId());
-			}
-			permits.release();
 		}
 	}
 

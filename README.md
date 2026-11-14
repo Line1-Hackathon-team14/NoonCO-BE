@@ -140,7 +140,8 @@ cp .env.example .env
 | --- | --- |
 | 이준호 | Backend |
 | 이민구 | Backend |
+|김나연 | AI|
 | 박현지 | Frontend |
 | 신연아 | Frontend |
 | 고서영 | Design |
-|김나연 | AI|
+

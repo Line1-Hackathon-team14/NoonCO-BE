@@ -36,7 +36,7 @@ public class AnalysisController {
 			meta: {"type":"meta","visualType":"LINE","title":"..."} (title 은 자료 제목, PDF 는 visualType 없이 title 만 온다)
 			delta: {"type":"delta","section":"SUMMARY"|"DETAIL","text":"..."}
 			SUMMARY(한 번 탭, 전체 요약) delta 가 모두 나간 뒤 DETAIL(두 번 탭, 축·수치 상세) delta 가 나간다.
-			상세가 없으면 DETAIL delta 는 오지 않는다(PDF 는 현재 상세 없음). 같은 section 의 text 를 순서대로 이어 붙이면 된다.
+			상세가 없으면 DETAIL delta 는 오지 않는다. 같은 section 의 text 를 순서대로 이어 붙이면 된다.
 			started 이후 3초마다 {"type":"ping"} 줄이 섞여 올 수 있으며, 연결 유지용이므로 무시한다.
 			스트림 도중 실패하면 done 대신 error 가 마지막 줄로 온다(HTTP 상태는 200, 이후 ping 포함 아무것도 오지 않는다).
 			error: {"type":"error","code":"...","message":"...","status":"UNREADABLE"|"FAILED"}

@@ -143,3 +143,4 @@ cp .env.example .env
 | 박현지 | Frontend |
 | 신연아 | Frontend |
 | 고서영 | Design |
+|김나연 | AI|

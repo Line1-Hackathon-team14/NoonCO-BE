@@ -33,17 +33,23 @@ public class AnalysisController {
 	@Operation(summary = "해설 생성 스트림", description = """
 			사용자 설정 난이도로 해설을 만들어 NDJSON(한 줄에 JSON 하나)으로 보낸다.
 			이벤트 순서: started → progress(ANALYZING) → meta → progress(GENERATING) → delta(여러 줄) → done.
+			started: {"type":"started","analysisId":25,"difficulty":"NORMAL"}
+			progress: {"type":"progress","stage":"ANALYZING"|"GENERATING"}
 			meta: {"type":"meta","visualType":"LINE","title":"..."} (title 은 자료 제목, PDF 는 visualType 없이 title 만 온다)
 			delta: {"type":"delta","section":"SUMMARY"|"DETAIL","text":"..."}
-			SUMMARY(한 번 탭, 전체 요약) delta 가 모두 나간 뒤 DETAIL(두 번 탭, 축·수치 상세) delta 가 나간다.
+			done: {"type":"done","analysisId":25,"status":"COMPLETED"}
+			SUMMARY(한 번 탭, 전체 요약) delta 가 모두 나간 뒤 DETAIL(두 번 탭, 상세) delta 가 나간다.
+			DETAIL 은 이미지는 축·단위·수치 상세, PDF 는 문서 속 표·그래프를 등장 순서대로 설명한 상세다.
 			상세가 없으면 DETAIL delta 는 오지 않는다. 같은 section 의 text 를 순서대로 이어 붙이면 된다.
 			started 이후 3초마다 {"type":"ping"} 줄이 섞여 올 수 있으며, 연결 유지용이므로 무시한다.
 			스트림 도중 실패하면 done 대신 error 가 마지막 줄로 온다(HTTP 상태는 200, 이후 ping 포함 아무것도 오지 않는다).
 			error: {"type":"error","code":"...","message":"...","status":"UNREADABLE"|"FAILED"}
 			code: UNREADABLE_IMAGE(사진 판독 불가, status UNREADABLE), AI_FAILED(생성 실패), AI_TIMEOUT(제한 시간 초과)
 			done·error 없이 스트림이 끝나면 연결 끊김과 같이 중단된 것으로 보고, 잠시 후 다시 요청한다.
-			실패·취소된 자료만 다시 요청할 수 있다. 스트림 시작 전 오류는 일반 JSON 에러로 응답한다.
-			동시 실행 수를 넘으면 503 AI_BUSY 로 응답한다.""")
+			완료되지 않은 자료(실패·판독 불가)만 다시 요청할 수 있다.
+			스트림 시작 전 오류는 NDJSON 이 아닌 일반 JSON 에러로 응답한다:
+			RESOURCE_NOT_FOUND(404, 없는·삭제된·타인 자료), ANALYSIS_ALREADY_COMPLETED(409, 이미 완료된 자료),
+			ANALYSIS_IN_PROGRESS(409, 같은 자료의 해설이 생성 중), AI_BUSY(503, 동시 실행 수 초과)""")
 	@PostMapping
 	public ResponseEntity<StreamingResponseBody> createAnalysis(
 			@Parameter(hidden = true) @AuthenticationPrincipal Long userId, @PathVariable Long materialId,

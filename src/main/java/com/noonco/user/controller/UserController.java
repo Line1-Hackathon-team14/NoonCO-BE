@@ -34,7 +34,9 @@ public class UserController {
 		return RsData.success(userService.getMe(userId));
 	}
 
-	@Operation(summary = "설정 변경", description = "난이도와 말하기 속도 중 보낸 값만 변경한다.")
+	@Operation(summary = "설정 변경", description = """
+			난이도와 말하기 속도 중 보낸 값만 변경한다. 최소 1개는 보내야 한다.
+			에러: VALIDATION_FAILED(400, 둘 다 없음, 말하기 속도가 0.5~2.0 밖이거나 소수 둘째 자리 이상)""")
 	@PatchMapping("/settings")
 	public RsData<UserSettingsResponse> updateSettings(@Parameter(hidden = true) @AuthenticationPrincipal Long userId,
 			@Valid @RequestBody UpdateSettingsRequest request) {

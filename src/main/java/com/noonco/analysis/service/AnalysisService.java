@@ -1,0 +1,135 @@
+package com.noonco.analysis.service;
+
+import java.time.Duration;
+import java.util.Optional;
+
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+import com.noonco.ai.LlmProperties;
+import com.noonco.ai.Prompt;
+import com.noonco.ai.PromptLoader;
+import com.noonco.analysis.entity.Analysis;
+import com.noonco.analysis.entity.AnalysisStatus;
+import com.noonco.analysis.entity.VisualType;
+import com.noonco.analysis.repository.AnalysisRepository;
+import com.noonco.global.ResultCode;
+import com.noonco.global.exception.BusinessException;
+import com.noonco.material.entity.Material;
+import com.noonco.material.entity.SourceType;
+import com.noonco.material.repository.MaterialRepository;
+import com.noonco.user.entity.Difficulty;
+import com.noonco.user.repository.UserSettingsRepository;
+
+/**
+ * 해설 생성의 시작·완료·실패 상태를 각각 짧은 트랜잭션으로 저장한다.
+ * LLM 호출과 스트림 전송은 트랜잭션 밖({@link AnalysisStreamService})에서 한다.
+ */
+@Service
+@Transactional
+public class AnalysisService {
+
+	private final MaterialRepository materialRepository;
+	private final AnalysisRepository analysisRepository;
+	private final UserSettingsRepository userSettingsRepository;
+	private final PromptLoader promptLoader;
+	// PENDING 이 이 시간 안이면 진행 중으로 본다. LLM 호출 전체 제한 시간과 같다
+	private final Duration analysisTimeout;
+
+	public AnalysisService(MaterialRepository materialRepository, AnalysisRepository analysisRepository,
+			UserSettingsRepository userSettingsRepository, PromptLoader promptLoader, LlmProperties llmProperties) {
+		this.materialRepository = materialRepository;
+		this.analysisRepository = analysisRepository;
+		this.userSettingsRepository = userSettingsRepository;
+		this.promptLoader = promptLoader;
+		this.analysisTimeout = llmProperties.gemini().timeout();
+	}
+
+	/**
+	 * 해설을 시작할 수 있는지 확인하고 PENDING analysis 를 만든다.
+	 * 같은 자료에 대한 동시 요청은 material 행 잠금으로 줄을 세운다.
+	 * 잠금 조회를 이 트랜잭션의 첫 조회로 해야, 잠금을 얻은 뒤의 조회가 앞 요청이 커밋한 analysis 를 본다(MySQL REPEATABLE READ).
+	 *
+	 * @throws BusinessException RESOURCE_NOT_FOUND, ANALYSIS_ALREADY_COMPLETED, ANALYSIS_IN_PROGRESS
+	 */
+	public AnalysisStart start(Long userId, Long materialId) {
+		// 타인 자료, 삭제된 자료, 없는 자료를 구분하지 않는다 (MaterialService.getOwnedMaterial 과 같은 기준)
+		Material material = materialRepository.findByIdAndUserIdForUpdate(materialId, userId)
+				.orElseThrow(() -> new BusinessException(ResultCode.RESOURCE_NOT_FOUND));
+
+		analysisRepository.findFirstByMaterialIdOrderByIdDesc(materialId).ifPresent(this::checkStartable);
+
+		Difficulty difficulty = userSettingsRepository.findById(userId)
+				.orElseThrow(() -> new BusinessException(ResultCode.RESOURCE_NOT_FOUND))
+				.getDifficulty();
+		Prompt prompt = promptLoader.get(material.getSourceType(), difficulty);
+		Analysis analysis = analysisRepository.save(new Analysis(material, difficulty));
+		return new AnalysisStart(analysis.getId(), material.getId(), difficulty, material.getSourceType(),
+				material.getFilePath(), material.getMimeType(), prompt);
+	}
+
+	/**
+	 * start 와 같은 material 행 잠금 아래에서, 이 analysis 가 그 자료의 최신 analysis 이고 아직 PENDING 일 때만 완료한다.
+	 * 제한 시간이 지나 새 요청이 시작됐다면 이 analysis 는 대체된 것이므로 결과·제목을 저장하지 않는다.
+	 * 연결 끊김 감지 등으로 이미 FAILED 가 저장됐으면 COMPLETED 로 덮어쓰지 않는다(덮어쓰면 재요청이 막힌다).
+	 * 자료가 그 사이 삭제됐으면 제목은 저장하지 않는다. 상세 해설이 없으면 detail 은 null 이다.
+	 *
+	 * @return 완료했으면 true, 대체됐거나 이미 PENDING 이 아니라 저장하지 않았으면 false
+	 */
+	public boolean complete(Long analysisId, Long materialId, VisualType visualType, String title, String summary,
+			String detail, String model, String promptVersion) {
+		// 잠금 조회를 첫 조회로 해야 뒤의 최신 analysis 조회가 다른 요청이 커밋한 analysis 를 본다 (start 와 같은 이유)
+		Optional<Material> material = materialRepository.findByIdForUpdate(materialId);
+		boolean latest = analysisRepository.findFirstByMaterialIdOrderByIdDesc(materialId)
+				.map(analysis -> analysis.getId().equals(analysisId))
+				.orElse(false);
+		if (!latest) {
+			return false;
+		}
+		Analysis analysis = analysisRepository.findById(analysisId).orElseThrow();
+		if (analysis.getStatus() != AnalysisStatus.PENDING) {
+			return false;
+		}
+		analysis.complete(visualType, summary, detail, model, promptVersion);
+		material.ifPresent(m -> m.changeTitle(title));
+		return true;
+	}
+
+	/**
+	 * 아직 PENDING 인 경우에만 FAILED 로 바꾼다.
+	 * 연결 끊김을 감지한 watchdog 이 스트림 스레드의 complete 와 동시에 부를 수 있으므로, complete 와 같은 material 행 잠금을
+	 * 먼저 잡아 두 상태 변경을 직렬화한다. 잠금 순서는 start·complete 와 같다(material 행 → analysis 행).
+	 * 잠금 조회를 첫 조회로 해야 뒤의 analysis 조회가 다른 요청이 커밋한 상태를 본다 (start 와 같은 이유).
+	 */
+	public void fail(Long analysisId, Long materialId) {
+		materialRepository.findByIdForUpdate(materialId);
+		analysisRepository.findById(analysisId)
+				.filter(analysis -> analysis.getStatus() == AnalysisStatus.PENDING)
+				.ifPresent(Analysis::fail);
+	}
+
+	/**
+	 * 아직 PENDING 인 경우에만 UNREADABLE(이미지 판독 불가)로 바꾼다.
+	 */
+	public void markUnreadable(Long analysisId) {
+		analysisRepository.findById(analysisId)
+				.filter(analysis -> analysis.getStatus() == AnalysisStatus.PENDING)
+				.ifPresent(Analysis::markUnreadable);
+	}
+
+	private void checkStartable(Analysis latest) {
+		if (latest.getStatus() == AnalysisStatus.COMPLETED) {
+			throw new BusinessException(ResultCode.ANALYSIS_ALREADY_COMPLETED);
+		}
+		if (latest.isInProgress(analysisTimeout)) {
+			throw new BusinessException(ResultCode.ANALYSIS_IN_PROGRESS);
+		}
+	}
+
+	/**
+	 * 스트림 전송에 필요한 값. 트랜잭션 밖에서 쓰므로 엔티티 대신 값만 담는다.
+	 */
+	public record AnalysisStart(Long analysisId, Long materialId, Difficulty difficulty, SourceType sourceType,
+			String filePath, String mimeType, Prompt prompt) {
+	}
+}

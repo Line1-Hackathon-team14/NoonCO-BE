@@ -1,0 +1,17 @@
+# /etc/systemd/system/noonco.service
+[Unit]
+Description=NoonCo Spring Boot API
+After=network.target mysql.service
+Wants=mysql.service
+
+[Service]
+User=ubuntu
+# application.properties 가 실행 위치의 .env 를 읽으므로 .env 가 있는 폴더로 지정한다
+WorkingDirectory=/opt/noonco
+ExecStart=/usr/bin/java -Xmx512m -Duser.timezone=Asia/Seoul -jar /opt/noonco/noonco.jar
+Restart=always
+RestartSec=5
+SuccessExitStatus=143
+
+[Install]
+WantedBy=multi-user.target
